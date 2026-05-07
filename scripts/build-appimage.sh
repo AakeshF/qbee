@@ -137,12 +137,28 @@ find "$APPDIR" -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' -o -n
       ;;
   esac
 done
-echo "==> done stripping. Surviving binaries:"
-find "$APPDIR" -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -name '*.dll' \) 2>/dev/null | while read -r f; do
-  desc=$(file -b "$f" 2>/dev/null | head -c 80)
+# Second pass: scan EVERY regular file in the AppDir (not just by extension)
+# and delete anything `file` identifies as a non-host binary. appimagetool
+# auto-detects arch by content, so extensionless executables (e.g.
+# bundled language-server binaries) still trip it.
+echo "==> stripping non-host binaries by content (slow but thorough)"
+find "$APPDIR" -type f -size +1c 2>/dev/null | xargs -r file 2>/dev/null | while IFS=: read -r path desc; do
   case "$desc" in
-    *"ELF"*"$ELF_NEEDLE"*) ;;  # silent
-    *) printf '  STILL FOREIGN: %s :: %s\n' "$f" "$desc" ;;
+    *"ELF"*"$ELF_NEEDLE"*) ;;                              # keep host ELF
+    *"ELF"*) rm -f "$path"; printf '  rm[ELF-other] %s\n' "$path" ;;
+    *"Mach-O"*) rm -f "$path"; printf '  rm[mach-o]   %s\n' "$path" ;;
+    *"PE32"*) rm -f "$path"; printf '  rm[PE32]      %s\n' "$path" ;;
+  esac
+done
+
+echo "==> final survivor scan"
+foreign_count=0
+find "$APPDIR" -type f -size +1c 2>/dev/null | xargs -r file 2>/dev/null | while IFS=: read -r path desc; do
+  case "$desc" in
+    *"ELF"*"$ELF_NEEDLE"*) ;;
+    *"ELF"*|*"Mach-O"*|*"PE32"*)
+      printf '  STILL FOREIGN: %s :: %s\n' "$path" "$(printf '%s' "$desc" | head -c 60)"
+      ;;
   esac
 done
 
