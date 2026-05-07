@@ -93,6 +93,32 @@ cp -a "$ROOT/spa/dist/." "$APPDIR/qbee-spa/"
 echo "==> 5/5 packaging AppImage"
 mkdir -p "$ROOT/.build/dist"
 OUT="$ROOT/.build/dist/QBee-${VERSION}-${APPIMAGE_ARCH}.AppImage"
+
+# better-sqlite3 ships pre-built binaries for every supported arch under
+# node_modules/.../prebuilds/. We compiled from source on this host, so the
+# prebuilds are dead weight AND they confuse appimagetool's auto-detection
+# ("more than one architectures were found"). Strip non-host prebuilds.
+echo "==> stripping non-host prebuilds from worker bundle"
+case "$APPIMAGE_ARCH" in
+  x86_64)  HOST_PREBUILD_DIR="linux-x64" ;;
+  aarch64) HOST_PREBUILD_DIR="linux-arm64" ;;
+esac
+find "$APPDIR/qbee-worker/node_modules" -type d -name 'prebuilds' 2>/dev/null | while read -r dir; do
+  for sub in "$dir"/*; do
+    [ -d "$sub" ] || continue
+    case "$(basename "$sub")" in
+      "$HOST_PREBUILD_DIR") ;;
+      *) rm -rf "$sub" ;;
+    esac
+  done
+done
+
+# Show what's left for any future debugging of "more than one architectures".
+echo "==> AppDir arch sanity check (sampling .node + .so files)"
+find "$APPDIR" -name '*.node' -o -name '*.so' 2>/dev/null | head -20 | while read -r f; do
+  printf '  %s :: %s\n' "$f" "$(file -b "$f" 2>/dev/null | head -c 80)"
+done
+
 # appimagetool reads ARCH from its environment to label the output. Without an
 # explicit export it walks the AppDir and refuses if it sees mixed architectures
 # (which happens when the bundled worker's better-sqlite3 prebuilds + the editor's
