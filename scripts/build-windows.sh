@@ -19,8 +19,8 @@ ARCH="${ARCH:-x64}"
 VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo 0.0.0)}"
 
 case "$ARCH" in
-  x64)   GULP_ARCH=x64 ;;
-  arm64) GULP_ARCH=arm64 ;;
+  x64)   GULP_ARCH=x64;   GO_ARCH=amd64 ;;
+  arm64) GULP_ARCH=arm64; GO_ARCH=arm64 ;;
   *)     echo "Unsupported ARCH=$ARCH" >&2; exit 2 ;;
 esac
 
@@ -103,7 +103,7 @@ echo "==> 5/5 building Go launcher → QBee.exe"
 # Cross-compile the Go launcher. windows-latest has Go preinstalled; Linux
 # cross-compiles via GOOS=windows GOARCH=amd64. Both produce the same binary.
 ( cd "$ROOT/scripts/launcher" && \
-  GOOS=windows GOARCH="$ARCH" go build -ldflags='-s -w -H=windowsgui' -o "$PKGDIR/QBee.exe" ./... )
+  GOOS=windows GOARCH="$GO_ARCH" go build -ldflags='-s -w -H=windowsgui' -o "$PKGDIR/QBee.exe" ./... )
 # -H=windowsgui prevents a console window from flashing when the user double-clicks.
 # Sanity check the output.
 file "$PKGDIR/QBee.exe" | head -1

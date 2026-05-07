@@ -179,6 +179,11 @@ jobs:
         with:
           node-version: '22.22.1'
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
 
@@ -245,6 +250,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22.22.1'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
