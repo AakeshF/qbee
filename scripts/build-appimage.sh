@@ -94,16 +94,19 @@ echo "==> 5/5 packaging AppImage"
 mkdir -p "$ROOT/.build/dist"
 OUT="$ROOT/.build/dist/QBee-${VERSION}-${APPIMAGE_ARCH}.AppImage"
 
-# better-sqlite3 ships pre-built binaries for every supported arch under
-# node_modules/.../prebuilds/. We compiled from source on this host, so the
-# prebuilds are dead weight AND they confuse appimagetool's auto-detection
-# ("more than one architectures were found"). Strip non-host prebuilds.
-echo "==> stripping non-host prebuilds from worker bundle"
+# Many bundled npm modules (better-sqlite3, @github/copilot/sdk, etc.) ship
+# pre-built binaries for every supported (os, arch) combo under prebuilds/.
+# On a host where we compile from source — and on Linux runners that don't
+# need the darwin/win32 binaries at all — those prebuilds are dead weight,
+# AND they trip appimagetool's auto-architecture detection
+# ("more than one architectures were found"). Strip everything except the
+# matching linux-<host> entry across the whole AppDir.
+echo "==> stripping non-host prebuilds from AppDir"
 case "$APPIMAGE_ARCH" in
   x86_64)  HOST_PREBUILD_DIR="linux-x64" ;;
   aarch64) HOST_PREBUILD_DIR="linux-arm64" ;;
 esac
-find "$APPDIR/qbee-worker/node_modules" -type d -name 'prebuilds' 2>/dev/null | while read -r dir; do
+find "$APPDIR" -type d -name 'prebuilds' 2>/dev/null | while read -r dir; do
   for sub in "$dir"/*; do
     [ -d "$sub" ] || continue
     case "$(basename "$sub")" in
