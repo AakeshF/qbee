@@ -58,6 +58,12 @@ VSCode-linux-*/
 VSCode-darwin-*/
 VSCode-win32-*/
 
+# Compiled Go launcher binaries (built into .build/ in CI; local builds
+# may drop them in scripts/launcher/ via `go build`)
+scripts/launcher/launcher
+scripts/launcher/launcher.exe
+scripts/launcher/qbee-launcher
+
 # Local runtime / editor user-data side effects
 .qbee-shared/
 
