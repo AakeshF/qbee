@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# AppRun — entry point for the QBee AppImage.
+# Layout (under $HERE inside the squashed FS):
+#   qbee                  - the editor binary (electron, named per product.json applicationName)
+#   resources/app/...     - the editor's bundled JS
+#   qbee-worker/server.cjs - the bundled worker (Node CJS, esbuild output)
+#   qbee-worker/node_modules/{better-sqlite3,sqlite-vec,...}/  - native deps
+#   qbee-spa/             - the built SPA (vite build output)
+#
+# Behavior:
+#   1. Pick a free TCP port and a random auth token
+#   2. Start the worker pointed at qbee-spa/ as its static-file root
+#   3. Wait for the worker's {"type":"ready"} stdout handshake
+#   4. Launch the editor with QBEE_WORKER_URL + QBEE_WORKER_AUTH set so the sidebar webview
+#      points at the worker
+#   5. On editor exit, terminate the worker
+set -e
+
+HERE="$(dirname "$(readlink -f "${0}")")"
+WORKER_DIR="${HERE}/qbee-worker"
+SPA_DIR="${HERE}/qbee-spa"
+
+# Free-port picker: ask Node to bind to port 0 and report what it got.
+pick_port() {
+	node -e 'const s=require("net").createServer(); s.listen(0,"127.0.0.1",()=>{const p=s.address().port; s.close(()=>console.log(p))})'
+}
+
+# Cryptographically reasonable random token. /dev/urandom is universal.
+random_token() {
+	head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24
+}
+
+# If we don't have a bundled worker (e.g. the user ran scripts/build-appimage.sh
+# without bundling it in), fall back to launching the editor unmodified — the
+# sidebar will fail to talk to /api/* but at least the editor opens.
+if [ -d "$WORKER_DIR" ] && [ -f "$WORKER_DIR/server.cjs" ]; then
+	# Use the bundled Node from the editor's resources if shipped, else system node.
+	NODE_BIN="$(command -v node || true)"
+	if [ -z "$NODE_BIN" ]; then
+		echo "AppRun: 'node' not found on PATH — required to run the QBee worker." >&2
+		echo "AppRun: continuing with editor only (AI features disabled)." >&2
+	else
+		export QBEE_WORKER_PORT="$(pick_port)"
+		export QBEE_WORKER_AUTH="$(random_token)"
+		export QBEE_SPA_DIST="$SPA_DIR"
+		export QBEE_WORKER_URL="http://127.0.0.1:${QBEE_WORKER_PORT}"
+
+		"$NODE_BIN" "$WORKER_DIR/server.cjs" >/tmp/qbee-worker-$$.log 2>&1 &
+		WORKER_PID=$!
+
+		# Trap so the worker dies with the editor (and with this script on signal).
+		cleanup() {
+			if kill -0 "$WORKER_PID" 2>/dev/null; then
+				kill "$WORKER_PID" 2>/dev/null || true
+			fi
+		}
+		trap cleanup EXIT INT TERM
+
+		# Wait up to 5s for the worker's ready handshake. If it never comes, log and
+		# continue — the editor still works without AI.
+		for _ in $(seq 50); do
+			if grep -q '"type":"ready"' /tmp/qbee-worker-$$.log 2>/dev/null; then
+				break
+			fi
+			sleep 0.1
+		done
+	fi
+fi
+
+exec "${HERE}/qbee" "$@"

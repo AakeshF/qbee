@@ -1,0 +1,6 @@
+[submodule "editor"]
+	# QBee fork of microsoft/vscode. The qbee/main branch sits on top of upstream main.
+	# Rebase against upstream: docs/05-Runbooks/Rebase-Upstream.md
+	path = editor
+	url = https://github.com/AakeshF/qbee-editor.git
+	branch = qbee/main

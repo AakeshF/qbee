@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# build-appimage.sh — package the QBee fork as a Linux AppImage.
+#
+# Pipeline:
+#   1. pnpm -w build           build SPA + worker + vendor SPA into editor's spa-dist/
+#   2. gulp vscode-linux-${ARCH}-min   produce VSCode-linux-${ARCH}/ tree (heavy: 15-30 min first run)
+#   3. assemble AppDir         copy that tree + AppRun + .desktop + icon
+#   4. appimagetool            squash AppDir into a single QBee-${ARCH}.AppImage
+#
+# Phase 6 limitations documented in docs/02-Phases/Phase-6-AppImage-Release.md:
+#   - No GPG signing yet
+#   - No in-app updater yet
+#   - The worker is NOT bundled — AI features need spaProxyService + workerManager (Phase 6.5)
+#     to ship a self-contained binary. Today's AppImage is editor-only.
+
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ARCH="${ARCH:-x64}"          # x64 | arm64
+VERSION="${VERSION:-$(git -C "$ROOT" describe --tags --always --dirty 2>/dev/null || echo 0.0.0)}"
+APPIMAGETOOL="${APPIMAGETOOL:-appimagetool}"
+NODE22_BIN="${HOME}/.local/opt/node-22/bin"
+
+case "$ARCH" in
+  x64)   GULP_ARCH=x64;   APPIMAGE_ARCH=x86_64 ;;
+  arm64) GULP_ARCH=arm64; APPIMAGE_ARCH=aarch64 ;;
+  *)     echo "Unsupported ARCH=$ARCH (expected x64 or arm64)" >&2; exit 2 ;;
+esac
+
+# Need Node 22 on PATH — VSCode upstream pins it via .nvmrc.
+if [ -d "$NODE22_BIN" ]; then
+  export PATH="$NODE22_BIN:$PATH"
+fi
+
+if ! command -v "$APPIMAGETOOL" >/dev/null 2>&1; then
+  cat <<EOF >&2
+appimagetool not found. Install it once:
+  curl -fsSL "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${APPIMAGE_ARCH}.AppImage" -o ~/.local/bin/appimagetool
+  chmod +x ~/.local/bin/appimagetool
+or set APPIMAGETOOL=/path/to/appimagetool.
+EOF
+  exit 3
+fi
+
+# An icon is required by the AppImage spec. Phase 0 deferred this — fail clearly with how to fix.
+ICON_SOURCE="$ROOT/scripts/appimage/qbee.png"
+if [ ! -f "$ICON_SOURCE" ]; then
+  cat <<EOF >&2
+Missing $ICON_SOURCE — Phase 0 deferred icon design.
+
+Drop a 256x256 (or larger square) PNG at scripts/appimage/qbee.png and re-run.
+For a placeholder you can ship today:
+  convert -size 512x512 xc:'#3a6cd8' -gravity center -fill white -pointsize 320 -annotate +0+0 'Q' scripts/appimage/qbee.png
+EOF
+  exit 4
+fi
+
+echo "==> 1/5 building SPA + worker + vendoring SPA"
+cd "$ROOT"
+pnpm -w build
+
+echo "==> 2/5 bundling worker (esbuild → single .cjs + native deps)"
+bash "$ROOT/scripts/bundle-worker.sh"
+
+echo "==> 3/5 building editor (gulp vscode-linux-${GULP_ARCH}-min) — this is the long step"
+cd "$ROOT/editor"
+if [ ! -d node_modules ]; then
+  npm install --legacy-peer-deps
+fi
+npm run gulp -- "vscode-linux-${GULP_ARCH}-min"
+
+VSCODE_BUILD_DIR="$(cd "$ROOT/editor/.." && pwd)/VSCode-linux-${GULP_ARCH}"
+if [ ! -d "$VSCODE_BUILD_DIR" ]; then
+  echo "Expected $VSCODE_BUILD_DIR after gulp; not found" >&2
+  exit 5
+fi
+
+echo "==> 4/5 assembling AppDir"
+APPDIR="$ROOT/.build/QBee-${ARCH}.AppDir"
+rm -rf "$APPDIR"
+mkdir -p "$APPDIR"
+cp -a "$VSCODE_BUILD_DIR/." "$APPDIR/"
+install -m 0755 "$ROOT/scripts/appimage/AppRun" "$APPDIR/AppRun"
+install -m 0644 "$ROOT/scripts/appimage/qbee.desktop" "$APPDIR/qbee.desktop"
+install -m 0644 "$ICON_SOURCE" "$APPDIR/qbee.png"
+# AppImage spec also wants a top-level .DirIcon (a copy/link of the icon).
+cp "$APPDIR/qbee.png" "$APPDIR/.DirIcon"
+# Worker bundle (server.cjs + native node_modules) and SPA build.
+mkdir -p "$APPDIR/qbee-worker" "$APPDIR/qbee-spa"
+cp -a "$ROOT/.build/worker/." "$APPDIR/qbee-worker/"
+cp -a "$ROOT/spa/dist/." "$APPDIR/qbee-spa/"
+
+echo "==> 5/5 packaging AppImage"
+mkdir -p "$ROOT/.build/dist"
+OUT="$ROOT/.build/dist/QBee-${VERSION}-${APPIMAGE_ARCH}.AppImage"
+ARCH="$APPIMAGE_ARCH" "$APPIMAGETOOL" --no-appstream "$APPDIR" "$OUT"
+
+# Checksum so users can verify even without GPG.
+sha256sum "$OUT" > "${OUT}.sha256"
+
+echo
+echo "✓ $OUT"
+echo "  $(du -h "$OUT" | cut -f1)"
+ls -la "${OUT}.sha256"

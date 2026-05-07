@@ -1,0 +1,18 @@
+[Desktop Entry]
+Name=QBee
+GenericName=Code Editor
+Comment=Code editing with first-class AI
+Exec=qbee %F
+Icon=qbee
+Type=Application
+StartupNotify=false
+StartupWMClass=qbee
+Categories=TextEditor;Development;IDE;
+MimeType=text/plain;inode/directory;application/x-qbee-workspace;
+Actions=new-empty-window;
+Keywords=qbee;ai;code;editor;
+
+[Desktop Action new-empty-window]
+Name=New Empty Window
+Exec=qbee --new-window %F
+Icon=qbee

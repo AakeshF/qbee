@@ -1,0 +1,337 @@
+// QBee worker — HTTP entry point. Self-contained: serves the SPA at / and the API at /api/*.
+// Standalone dev default is 8421 to match Vite's proxy in spa/vite.config.ts.
+// Production AppImage path: AppRun spawns this with QBEE_WORKER_PORT/AUTH set and
+// QBEE_SPA_DIST pointing at the bundled SPA build, then launches the editor pointed
+// at http://127.0.0.1:${port}.
+
+import path from 'node:path'
+import Fastify from 'fastify'
+import fastifyStatic from '@fastify/static'
+import { AgentRunRequest, ChatRequest, CompleteRequest, EchoRequest, RagIndexRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type RagIndexEvent, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
+import { createProvider } from './providers/index.js'
+import { runAgent } from './agent/loop.js'
+import { indexWorkspace } from './rag/indexer.js'
+import { retrieve } from './rag/retriever.js'
+import { RagStore } from './rag/store.js'
+
+const REQUESTED_PORT = Number(process.env.QBEE_WORKER_PORT ?? 8421)
+const AUTH = process.env.QBEE_WORKER_AUTH ?? 'dev'
+const SPA_DIST = process.env.QBEE_SPA_DIST ? path.resolve(process.env.QBEE_SPA_DIST) : null
+
+const app = Fastify({ logger: { level: process.env.QBEE_LOG_LEVEL ?? 'info' } })
+
+app.addHook('onRequest', async (req, reply) => {
+  // Auth gate ONLY fires for /api/* (except /api/health, reachable for liveness probes).
+  if (!req.url.startsWith('/api/') || req.url === '/api/health') return
+  const header = req.headers.authorization
+  if (!header || !header.startsWith('Basic ')) {
+    reply.code(401).send({ error: 'unauthorized' })
+    return
+  }
+  const [, pass] = Buffer.from(header.slice(6), 'base64').toString('utf8').split(':')
+  if (pass !== AUTH) {
+    reply.code(401).send({ error: 'unauthorized' })
+  }
+})
+
+app.get('/api/health', async () => ({ ok: true }))
+
+app.post('/api/echo', async (req, reply) => {
+  const parsed = EchoRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { text } = parsed.data
+  app.log.info({ text }, 'echo: received')
+
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+  const send = (e: EchoEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`)
+
+  // Stream the echo word-by-word so the SPA visibly sees a stream.
+  const words = text.split(/(\s+)/)
+  for (const w of words) {
+    send({ type: 'chunk', value: w })
+    await new Promise((r) => setTimeout(r, 30))
+  }
+  send({ type: 'done' })
+  reply.raw.end()
+})
+
+// Phase 2: API keys read from process.env until SecretStorage RPC lands.
+// apiKeyRef on the ProviderConfig is the env var name (e.g. ANTHROPIC_API_KEY).
+const getApiKeyFromEnv = async (ref: string): Promise<string | undefined> => process.env[ref]
+
+app.post('/api/chat', async (req, reply) => {
+  const parsed = ChatRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { provider: providerConfig, messages, maxTokens, temperature } = parsed.data
+  app.log.info({ provider: providerConfig.id, model: providerConfig.model, messages: messages.length }, 'chat: starting')
+
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+  const send = (e: ChatEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`)
+
+  const ac = new AbortController()
+  // Cancel the upstream provider if the SPA disconnects mid-stream.
+  // Listen on reply.raw — req.raw 'close' fires the moment curl finishes uploading
+  // the request body, which would abort before we ever start streaming.
+  reply.raw.on('close', () => {
+    if (!reply.raw.writableEnded) ac.abort()
+  })
+
+  try {
+    const provider = createProvider(providerConfig, getApiKeyFromEnv)
+    for await (const evt of provider.chat({
+      messages,
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
+      ...(temperature !== undefined ? { temperature } : {}),
+      signal: ac.signal,
+    })) {
+      app.log.debug({ evt }, 'chat: event')
+      send(evt)
+      if (evt.type === 'done' || evt.type === 'error') break
+    }
+  } catch (err) {
+    send({ type: 'error', message: (err as Error).message })
+  } finally {
+    if (!reply.raw.writableEnded) reply.raw.end()
+  }
+})
+
+// Non-streaming FIM completion. The InlineCompletionItemProvider in the editor
+// wants a single Promise<string>, not a stream — collecting server-side is simpler
+// than reassembling on the renderer.
+app.post('/api/complete', async (req, reply) => {
+  const parsed = CompleteRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { provider: providerConfig, prefix, suffix, language, filePath, maxTokens } = parsed.data
+
+  // Cap completion at a few lines — let the user trigger more if they want the full function.
+  const MAX_LINES = 6
+
+  const ac = new AbortController()
+  reply.raw.on('close', () => {
+    if (!reply.raw.writableEnded) ac.abort()
+  })
+
+  try {
+    const provider = createProvider(providerConfig, getApiKeyFromEnv)
+    let text = ''
+    for await (const chunk of provider.complete({
+      prefix,
+      suffix,
+      language,
+      maxTokens,
+      signal: ac.signal,
+    })) {
+      text += chunk
+      // Stop early once we have enough lines. The provider's `stop` tokens take care of FIM markers.
+      if (text.split('\n').length > MAX_LINES) break
+    }
+
+    // Trim to MAX_LINES so we never return a runaway completion.
+    text = text.split('\n').slice(0, MAX_LINES).join('\n')
+
+    app.log.info({ provider: providerConfig.id, model: providerConfig.model, language, filePath, len: text.length }, 'complete: done')
+    reply.send({ text })
+  } catch (err) {
+    app.log.warn({ err: (err as Error).message }, 'complete: failed')
+    reply.code(500).send({ error: (err as Error).message })
+  }
+})
+
+app.post('/api/agent/run', async (req, reply) => {
+  const parsed = AgentRunRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { provider: providerConfig, messages, workspaceRoot, maxIterations } = parsed.data
+  app.log.info({ provider: providerConfig.id, model: providerConfig.model, workspaceRoot, messages: messages.length }, 'agent: starting')
+
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+  const send = (e: AgentEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`)
+
+  const ac = new AbortController()
+  reply.raw.on('close', () => {
+    if (!reply.raw.writableEnded) ac.abort()
+  })
+
+  try {
+    for await (const evt of runAgent({
+      providerConfig,
+      initialMessages: messages,
+      workspaceRoot,
+      maxIterations,
+      signal: ac.signal,
+      getApiKey: getApiKeyFromEnv,
+    })) {
+      send(evt)
+      if (evt.type === 'done' || evt.type === 'error') break
+    }
+  } catch (err) {
+    send({ type: 'error', message: (err as Error).message })
+  } finally {
+    if (!reply.raw.writableEnded) reply.raw.end()
+  }
+})
+
+// Per-workspace RAG store cache. Each workspace has one .qbee/index.sqlite, and we
+// keep the connection open across requests instead of reopening on every search.
+const ragStores = new Map<string, RagStore>()
+
+async function getRagStore(workspaceRoot: string, dim: number): Promise<RagStore> {
+  const key = `${workspaceRoot}:${dim}`
+  let store = ragStores.get(key)
+  if (!store) {
+    store = new RagStore(workspaceRoot, dim)
+    ragStores.set(key, store)
+  }
+  return store
+}
+
+// Probe the embedding provider once to learn its output dim before opening the store.
+async function probeEmbeddingDim(providerConfig: import('@qbee/shared').ProviderConfig): Promise<number> {
+  const provider = createProvider(providerConfig, getApiKeyFromEnv)
+  const result = await provider.embed(['probe'])
+  return result.dim
+}
+
+app.post('/api/rag/index', async (req, reply) => {
+  const parsed = RagIndexRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { workspaceRoot, embeddingProvider: embedProviderConfig } = parsed.data
+  app.log.info({ workspaceRoot, model: embedProviderConfig.model }, 'rag: index starting')
+
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+  const send = (e: RagIndexEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`)
+
+  const ac = new AbortController()
+  reply.raw.on('close', () => {
+    if (!reply.raw.writableEnded) ac.abort()
+  })
+
+  try {
+    const dim = await probeEmbeddingDim(embedProviderConfig)
+    const store = await getRagStore(workspaceRoot, dim)
+    // If the embedding model changed (different dim), wipe and rebuild.
+    if (Number(store.getMeta('dim')) !== dim) store.resetForDim(dim)
+    store.setMeta('embeddingProviderId', embedProviderConfig.id)
+    store.setMeta('embeddingModel', embedProviderConfig.model)
+
+    const provider = createProvider(embedProviderConfig, getApiKeyFromEnv)
+    for await (const evt of indexWorkspace({
+      workspaceRoot,
+      store,
+      embeddingProvider: provider,
+      embeddingDim: dim,
+      signal: ac.signal,
+    })) {
+      send(evt)
+      if (evt.type === 'done' || evt.type === 'error') break
+    }
+  } catch (err) {
+    send({ type: 'error', message: (err as Error).message })
+  } finally {
+    if (!reply.raw.writableEnded) reply.raw.end()
+  }
+})
+
+app.post('/api/rag/search', async (req, reply) => {
+  const parsed = RagSearchRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { workspaceRoot, embeddingProvider: embedProviderConfig, query, topK } = parsed.data
+  try {
+    const dim = await probeEmbeddingDim(embedProviderConfig)
+    const store = await getRagStore(workspaceRoot, dim)
+    const provider = createProvider(embedProviderConfig, getApiKeyFromEnv)
+    const hits = await retrieve({ store, embeddingProvider: provider, query, topK })
+    const response: RagSearchResponse = {
+      chunks: hits.map((h) => ({ filePath: h.filePath, startLine: h.startLine, endLine: h.endLine, content: h.content, score: h.score })),
+    }
+    reply.send(response)
+  } catch (err) {
+    reply.code(500).send({ error: (err as Error).message })
+  }
+})
+
+app.get('/api/rag/status', async (req, reply) => {
+  const workspaceRoot = (req.query as { workspaceRoot?: string }).workspaceRoot
+  if (!workspaceRoot) {
+    reply.code(400).send({ error: 'workspaceRoot query param required' })
+    return
+  }
+  // Find any open store for this workspace (regardless of dim).
+  let store: RagStore | undefined
+  for (const [key, s] of ragStores) {
+    if (key.startsWith(`${workspaceRoot}:`)) {
+      store = s
+      break
+    }
+  }
+  const response: RagStatusResponse = {
+    workspaceRoot,
+    filesIndexed: store?.filesIndexed() ?? 0,
+    chunks: store?.totalChunks() ?? 0,
+    embeddingDim: store ? Number(store.getMeta('dim') ?? 0) : null,
+    lastIndexed: store ? Number(store.getMeta('lastIndexed') ?? 0) || null : null,
+  }
+  reply.send(response)
+})
+
+const start = async () => {
+  try {
+    if (SPA_DIST) {
+      // SPA serves at /, no auth (the iframe loads without auth; auth is read from
+      // the URL fragment and used on /api/* calls). Plugin order matters: register
+      // before the listen call.
+      await app.register(fastifyStatic, { root: SPA_DIST, prefix: '/', decorateReply: false })
+      app.log.info({ spaDist: SPA_DIST }, 'serving SPA from disk')
+    }
+    const address = await app.listen({ host: '127.0.0.1', port: REQUESTED_PORT })
+    const port = Number(new URL(address).port)
+    // Handshake: workerManager parses this single JSON line from stdout to discover the port.
+    process.stdout.write(`${JSON.stringify({ type: 'ready', port })}\n`)
+  } catch (err) {
+    app.log.error(err)
+    process.exit(1)
+  }
+}
+
+const shutdown = async () => {
+  app.log.info('shutting down')
+  await app.close()
+  process.exit(0)
+}
+process.on('SIGTERM', shutdown)
+process.on('SIGINT', shutdown)
+
+start()

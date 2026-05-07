@@ -1,0 +1,65 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Vendored SPA bundle (regenerated from spa/dist)
+editor/src/vs/workbench/contrib/qbee/spa-dist/
+
+# Editor fork is a git submodule with its own .gitignore — ignore generated files there
+editor/.build/
+editor/out/
+editor/out-build/
+editor/out-vscode/
+
+# Local runtime data
+.qbee/
+*.sqlite
+*.sqlite-journal
+*.log
+
+# Secrets — these should never be committed
+.env
+.env.local
+.env.*.local
+
+# Editor / IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Obsidian — keep vault config but ignore workspace state
+docs/.obsidian/workspace*.json
+docs/.obsidian/cache
+docs/.obsidian/plugins/*/data.json
+
+# Test artifacts
+coverage/
+.nyc_output/
+
+# Release artifacts
+release/
+.build/
+*.AppImage
+*.AppImage.sha256
+
+# Editor gulp build output (built into the parent of editor/)
+VSCode-linux-*/
+VSCode-darwin-*/
+VSCode-win32-*/
+
+# Local runtime / editor user-data side effects
+.qbee-shared/
+
+# Local-only kickoff prompt — replace with a real README on first sharing
+KICKOFF-PROMPT.md
