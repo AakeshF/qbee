@@ -36,6 +36,39 @@ cd "$ROOT/editor"
 if [ ! -d node_modules ]; then
   npm install --legacy-peer-deps
 fi
+
+# Pre-strip cross-platform binaries from the editor tree BEFORE gulp runs.
+# rcedit.exe (upstream's metadata patcher) tries to load every .node/.exe/.dll
+# in the output to set Windows version info — and chokes on Mach-O / non-host
+# ELF binaries that ride along in extension-bundled prebuilds (notably
+# @github/copilot/sdk/prebuilds and @anthropic-ai/claude-agent-sdk vendor).
+# Same content-based strip we use post-gulp on Linux, but here it has to
+# happen before package-win32 copies the node_modules into the output tree.
+echo "    pre-stripping non-host binaries from editor tree"
+HOST_PREBUILD_DIR="win32-${GULP_ARCH}"
+find . -type d -name 'prebuilds' 2>/dev/null | while read -r dir; do
+  for sub in "$dir"/*; do
+    [ -d "$sub" ] || continue
+    case "$(basename "$sub")" in
+      "$HOST_PREBUILD_DIR") ;;
+      *) rm -rf "$sub" ;;
+    esac
+  done
+done
+ELF_NEEDLE=""
+case "$GULP_ARCH" in
+  x64)   PE_ARCH="x86-64" ;;
+  arm64) PE_ARCH="Aarch64" ;;
+esac
+find . -type f \( -name '*.node' -o -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) 2>/dev/null | while read -r f; do
+  desc=$(file -b "$f" 2>/dev/null || true)
+  case "$desc" in
+    *"PE32+"*"$PE_ARCH"*) ;;       # keep host-arch Windows binaries
+    *"Mach-O"*|*"ELF"*) rm -f "$f" ;;
+    *) ;;
+  esac
+done
+
 npm run gulp -- "vscode-win32-${GULP_ARCH}-min"
 
 VSCODE_BUILD_DIR="$(cd "$ROOT/editor/.." && pwd)/VSCode-win32-${GULP_ARCH}"
