@@ -1,8 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatEvent, ChatMessage, ProviderConfig } from '@qbee/shared'
+import type { ChatEvent, ChatMessage, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
 import { Agent } from './Agent.js'
+import { Markdown } from './Markdown.js'
 
 type Msg = ChatMessage & { id: string }
+
+// Embedding provider for RAG. Independent from the chat provider because Anthropic
+// and Gemini don't expose embeddings through our adapter. Default targets Ollama on
+// localhost — override the model string inline if you're on LM Studio (which uses
+// e.g. text-embedding-nomic-embed-text-v1.5) or another OpenAI-compatible server.
+const DEFAULT_EMBEDDING_PROVIDER: ProviderConfig = {
+  id: 'openai-compatible',
+  model: 'nomic-embed-text',
+  baseUrl: 'http://127.0.0.1:11434/v1',
+}
 
 type ProviderPreset = {
   label: string
@@ -23,6 +34,9 @@ export function App() {
   const [presetIdx, setPresetIdx] = useState(0)
   const [model, setModel] = useState(DEFAULT_PRESETS[0]!.config.model)
   const [workspaceRoot] = useState('/home/aakeshf/projects/qbee') // TODO: pass from editor via URL fragment
+  const [embeddingProvider, setEmbeddingProvider] = useState<ProviderConfig>(DEFAULT_EMBEDDING_PROVIDER)
+  const [ragStatus, setRagStatus] = useState<RagStatusResponse | null>(null)
+  const [indexProgress, setIndexProgress] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
@@ -44,12 +58,97 @@ export function App() {
 
   const authHeader = () => ({ Authorization: `Basic ${btoa(`qbee:${auth}`)}` })
 
+  // Refresh RAG status whenever the workspace or auth becomes available.
+  useEffect(() => {
+    const refresh = async () => {
+      try {
+        const res = await fetch(`/api/rag/status?workspaceRoot=${encodeURIComponent(workspaceRoot)}`, { headers: authHeader() })
+        if (res.ok) setRagStatus(await res.json())
+      } catch {
+        /* worker may not be up yet */
+      }
+    }
+    refresh()
+  }, [auth, workspaceRoot])
+
+  const startIndex = async () => {
+    setIndexProgress('starting…')
+    try {
+      const res = await fetch('/api/rag/index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
+        body: JSON.stringify({ workspaceRoot, embeddingProvider }),
+      })
+      if (!res.ok || !res.body) {
+        setIndexProgress(`error: HTTP ${res.status}`)
+        return
+      }
+      let total = 0
+      let chunks = 0
+      for await (const evt of parseSSE<{ type: string;[k: string]: unknown }>(res.body)) {
+        if (evt.type === 'discovered') {
+          total = evt.count as number
+          setIndexProgress(`discovered ${total} files`)
+        } else if (evt.type === 'file') {
+          setIndexProgress(`${(evt.index as number) + 1}/${total}: ${evt.path}`)
+        } else if (evt.type === 'embedded') {
+          chunks += evt.chunkCount as number
+          setIndexProgress(`embedded ${chunks} chunks`)
+        } else if (evt.type === 'done') {
+          setIndexProgress(`✓ ${evt.files} files / ${evt.chunks} chunks (${evt.tookMs}ms)`)
+        } else if (evt.type === 'error') {
+          setIndexProgress(`error: ${evt.message}`)
+        }
+      }
+      // Refresh status after indexing.
+      const statusRes = await fetch(`/api/rag/status?workspaceRoot=${encodeURIComponent(workspaceRoot)}`, { headers: authHeader() })
+      if (statusRes.ok) setRagStatus(await statusRes.json())
+    } catch (err) {
+      setIndexProgress(`error: ${(err as Error).message}`)
+    }
+  }
+
+  // Detect a leading "@codebase <query>" mention. Strip it, return the cleaned
+  // user text plus the search query (defaults to the whole message).
+  const parseCodebaseMention = (text: string): { cleaned: string; query: string | null } => {
+    const m = text.match(/^@codebase\b\s*(.*)/is)
+    if (!m) return { cleaned: text, query: null }
+    const rest = (m[1] ?? '').trim()
+    return { cleaned: rest || text, query: rest || text }
+  }
+
+  const fetchRagContext = async (query: string): Promise<string | null> => {
+    try {
+      const res = await fetch('/api/rag/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
+        body: JSON.stringify({ workspaceRoot, embeddingProvider, query, topK: 8 }),
+      })
+      if (!res.ok) return null
+      const json = (await res.json()) as RagSearchResponse
+      if (!json.chunks?.length) return null
+      const blocks = json.chunks.map((c) => `--- ${c.filePath}:${c.startLine}-${c.endLine}\n${c.content}`).join('\n\n')
+      return `Relevant code from the workspace (retrieved via @codebase):\n\n${blocks}`
+    } catch {
+      return null
+    }
+  }
+
   const send = async () => {
     const text = input.trim()
     if (!text || busy) return
     setInput('')
 
-    const userMsg: Msg = { id: cryptoId(), role: 'user', content: text }
+    // @codebase parsing: if the user prefixed with @codebase, fetch RAG hits
+    // and prepend them as a system message so the model has context.
+    const { cleaned, query } = parseCodebaseMention(text)
+    let contextSystem: ChatMessage | null = null
+    if (query) {
+      const ctx = await fetchRagContext(query)
+      if (ctx) contextSystem = { role: 'system', content: ctx }
+    }
+
+    const userMsg: Msg = { id: cryptoId(), role: 'user', content: cleaned }
     const assistantMsg: Msg = { id: cryptoId(), role: 'assistant', content: '' }
     const nextMsgs = [...msgs, userMsg, assistantMsg]
     setMsgs(nextMsgs)
@@ -59,9 +158,10 @@ export function App() {
     abortRef.current = ac
 
     const provider: ProviderConfig = { ...DEFAULT_PRESETS[presetIdx]!.config, model }
+    const baseMessages = nextMsgs.slice(0, -1).map(({ role, content }) => ({ role, content }))
     const body = {
       provider,
-      messages: nextMsgs.slice(0, -1).map(({ role, content }) => ({ role, content })),
+      messages: contextSystem ? [contextSystem, ...baseMessages] : baseMessages,
     }
 
     try {
@@ -108,7 +208,14 @@ export function App() {
           ))}
         </select>
         <input style={styles.modelInput} value={model} onChange={(e) => setModel(e.target.value)} disabled={busy} />
+        <span style={styles.ragBadge} title={ragStatus ? `${ragStatus.filesIndexed} files / ${ragStatus.chunks} chunks` : 'not indexed yet'}>
+          rag: {ragStatus ? `${ragStatus.chunks}` : '—'}
+        </span>
+        <button style={styles.indexBtn} onClick={startIndex} disabled={busy} title={`Embed via ${embeddingProvider.model} at ${embeddingProvider.baseUrl}`}>
+          {indexProgress ? '⟳' : 'Index'}
+        </button>
       </header>
+      {indexProgress && <div style={styles.indexLine}>{indexProgress}</div>}
       {tab === 'agent' ? (
         <Agent auth={auth} provider={currentProvider} workspaceRoot={workspaceRoot} />
       ) : (
@@ -123,7 +230,13 @@ export function App() {
         {msgs.map((m) => (
           <div key={m.id} style={{ ...styles.msg, ...(m.role === 'user' ? styles.user : styles.assistant) }}>
             <div style={styles.role}>{m.role}</div>
-            <div style={styles.content}>{m.content || (m.role === 'assistant' && busy ? '…' : '')}</div>
+            <div style={styles.content}>
+              {m.content ? (
+                m.role === 'assistant' ? <Markdown text={m.content} /> : m.content
+              ) : (
+                m.role === 'assistant' && busy ? '…' : ''
+              )}
+            </div>
           </div>
         ))}
       </main>
@@ -228,4 +341,7 @@ const styles: Record<string, React.CSSProperties> = {
   form: { display: 'flex', gap: 6, padding: 8, borderTop: '1px solid #333' },
   textarea: { flex: 1, background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '6px 8px', borderRadius: 4, fontSize: 13, fontFamily: 'inherit', resize: 'none' },
   button: { background: '#3a6cd8', border: 'none', color: 'white', padding: '6px 12px', borderRadius: 4, cursor: 'pointer', fontSize: 13, alignSelf: 'flex-end' },
+  ragBadge: { background: '#2a4a3a', color: '#9eccaa', padding: '2px 6px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' },
+  indexBtn: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '3px 8px', borderRadius: 4, fontSize: 11, cursor: 'pointer' },
+  indexLine: { padding: '4px 12px', fontSize: 11, fontFamily: 'monospace', background: '#1a1a1a', color: '#9eccaa', borderBottom: '1px solid #333' },
 }

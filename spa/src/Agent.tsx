@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentEvent, ProviderConfig } from '@qbee/shared'
+import { Markdown } from './Markdown.js'
 
 type DiffStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'rejected'
 
@@ -223,7 +224,9 @@ function Block({ item, onApply, onReject }: BlockProps) {
       return (
         <div style={{ ...styles.msg, ...styles.assistant }}>
           <div style={styles.role}>agent</div>
-          <div style={styles.content}>{item.text}</div>
+          <div style={styles.content}>
+            <Markdown text={item.text} />
+          </div>
         </div>
       )
     case 'tool_use':

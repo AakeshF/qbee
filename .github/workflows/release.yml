@@ -116,6 +116,32 @@ jobs:
           VERSION: ${{ steps.ver.outputs.version }}
         run: bash scripts/build-appimage.sh
 
+      - name: GPG-sign AppImage (optional)
+        # Triggers only when the GPG_PRIVATE_KEY secret is set on the repo.
+        # Skip silently otherwise — releases ship with SHA-256 only.
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        if: env.GPG_PRIVATE_KEY != ''
+        run: |
+          set -e
+          # Import the key into a throwaway gpg homedir scoped to this run.
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+          # Sign every AppImage produced by the build step.
+          for f in .build/dist/QBee-*.AppImage; do
+            echo "::group::sign $f"
+            gpg --batch --yes --pinentry-mode loopback \
+                ${GPG_PASSPHRASE:+--passphrase "$GPG_PASSPHRASE"} \
+                --detach-sign --armor --output "${f}.asc" "$f"
+            gpg --verify "${f}.asc" "$f"
+            echo "::endgroup::"
+          done
+          # Wipe the homedir so the key is never written to a cache or artifact.
+          rm -rf "$GNUPGHOME"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -123,6 +149,7 @@ jobs:
           path: |
             .build/dist/QBee-*.AppImage
             .build/dist/QBee-*.AppImage.sha256
+            .build/dist/QBee-*.AppImage.asc
 
   release:
     needs: build
@@ -140,5 +167,6 @@ jobs:
           files: |
             artifacts/**/QBee-*.AppImage
             artifacts/**/QBee-*.AppImage.sha256
+            artifacts/**/QBee-*.AppImage.asc
           generate_release_notes: true
           fail_on_unmatched_files: true

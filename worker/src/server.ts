@@ -13,6 +13,7 @@ import { runAgent } from './agent/loop.js'
 import { indexWorkspace } from './rag/indexer.js'
 import { retrieve } from './rag/retriever.js'
 import { RagStore } from './rag/store.js'
+import { RagWatcher } from './rag/watcher.js'
 
 const REQUESTED_PORT = Number(process.env.QBEE_WORKER_PORT ?? 8421)
 const AUTH = process.env.QBEE_WORKER_AUTH ?? 'dev'
@@ -197,6 +198,8 @@ app.post('/api/agent/run', async (req, reply) => {
 // Per-workspace RAG store cache. Each workspace has one .qbee/index.sqlite, and we
 // keep the connection open across requests instead of reopening on every search.
 const ragStores = new Map<string, RagStore>()
+// Per-workspace incremental watchers. One per (workspaceRoot, dim) to mirror the store cache.
+const ragWatchers = new Map<string, RagWatcher>()
 
 async function getRagStore(workspaceRoot: string, dim: number): Promise<RagStore> {
   const key = `${workspaceRoot}:${dim}`
@@ -245,6 +248,7 @@ app.post('/api/rag/index', async (req, reply) => {
     store.setMeta('embeddingModel', embedProviderConfig.model)
 
     const provider = createProvider(embedProviderConfig, getApiKeyFromEnv)
+    let indexedOk = false
     for await (const evt of indexWorkspace({
       workspaceRoot,
       store,
@@ -253,7 +257,23 @@ app.post('/api/rag/index', async (req, reply) => {
       signal: ac.signal,
     })) {
       send(evt)
+      if (evt.type === 'done') indexedOk = true
       if (evt.type === 'done' || evt.type === 'error') break
+    }
+    // Auto-start the incremental watcher once the initial pass succeeds.
+    if (indexedOk) {
+      const key = `${workspaceRoot}:${dim}`
+      if (!ragWatchers.has(key)) {
+        const watcher = new RagWatcher({
+          workspaceRoot,
+          store,
+          embeddingProvider: provider,
+          embeddingDim: dim,
+          log: (msg, data) => app.log.info(data ?? {}, msg),
+        })
+        await watcher.start()
+        ragWatchers.set(key, watcher)
+      }
     }
   } catch (err) {
     send({ type: 'error', message: (err as Error).message })
