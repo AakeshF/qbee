@@ -90,9 +90,13 @@ jobs:
         run: npm install --legacy-peer-deps
 
       - name: Install appimagetool
+        # Use the maintained github.com/AppImage/appimagetool (not the legacy
+        # AppImageKit). The 2023-vintage AppImageKit build's multi-arch
+        # auto-detect refuses to honor the ARCH env override even after
+        # stripping all foreign binaries; the maintained build behaves correctly.
         run: |
           mkdir -p "$HOME/.local/bin"
-          curl -fsSL "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage" -o "$HOME/.local/bin/appimagetool"
+          curl -fsSL "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage" -o "$HOME/.local/bin/appimagetool"
           chmod +x "$HOME/.local/bin/appimagetool"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
