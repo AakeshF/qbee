@@ -88,11 +88,27 @@ EOF
 echo "==> packaging zip"
 mkdir -p "$ROOT/.build/dist"
 OUT="$ROOT/.build/dist/QBee-${VERSION}-${ARCH}-win.zip"
-( cd "$PKGDIR/.." && python3 -c "
-import shutil
-shutil.make_archive('$ROOT/.build/dist/QBee-${VERSION}-${ARCH}-win', 'zip', '$ROOT/.build', 'QBee-${ARCH}-win')
-" )
-sha256sum "$OUT" > "${OUT}.sha256" || shasum -a 256 "$OUT" > "${OUT}.sha256"
+# Multiple paths in priority order — different runners have different tools.
+if command -v zip >/dev/null 2>&1; then
+  ( cd "$PKGDIR/.." && zip -qr "$OUT" "QBee-${ARCH}-win" )
+elif command -v 7z >/dev/null 2>&1; then
+  7z a -tzip "$OUT" "$PKGDIR" >/dev/null
+else
+  for py in python3 python py; do
+    if command -v $py >/dev/null 2>&1; then
+      $py -c "import shutil; shutil.make_archive('$ROOT/.build/dist/QBee-${VERSION}-${ARCH}-win', 'zip', '$ROOT/.build', 'QBee-${ARCH}-win')"
+      break
+    fi
+  done
+fi
+[ -f "$OUT" ] || { echo "Failed to create $OUT" >&2; exit 7; }
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum "$OUT" > "${OUT}.sha256"
+elif command -v shasum >/dev/null 2>&1; then
+  shasum -a 256 "$OUT" > "${OUT}.sha256"
+else
+  certutil -hashfile "$OUT" SHA256 | head -2 | tail -1 | tr -d '\r' | awk -v p="$OUT" '{print $1 "  " p}' > "${OUT}.sha256"
+fi
 
 echo
 echo "✓ $OUT"
