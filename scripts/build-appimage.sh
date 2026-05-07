@@ -116,6 +116,24 @@ find "$APPDIR" -type d -name 'prebuilds' 2>/dev/null | while read -r dir; do
   done
 done
 
+# Some bundled extensions ship cross-platform .node files outside any
+# prebuilds/ directory — e.g. ms-vscode.js-debug ships win32-arm64 +
+# win32-x64 PE32+ DLLs in extensions/.../src/. They're useless on Linux
+# but appimagetool's auto-detect still trips on them. Delete every .node
+# file that isn't an ELF binary for the host arch.
+echo "==> stripping non-Linux .node files"
+case "$APPIMAGE_ARCH" in
+  x86_64)  ELF_NEEDLE="x86-64" ;;
+  aarch64) ELF_NEEDLE="ARM aarch64" ;;
+esac
+find "$APPDIR" -name '*.node' -type f 2>/dev/null | while read -r f; do
+  desc=$(file -b "$f" 2>/dev/null)
+  case "$desc" in
+    *"ELF"*"$ELF_NEEDLE"*) ;;  # keep host-arch Linux binaries
+    *) rm -f "$f" ;;
+  esac
+done
+
 # Show what's left for any future debugging of "more than one architectures".
 echo "==> AppDir arch sanity check (sampling .node + .so files)"
 find "$APPDIR" -name '*.node' -o -name '*.so' 2>/dev/null | head -20 | while read -r f; do
