@@ -52,11 +52,14 @@ jobs:
           fi
 
       - name: Install system deps
+        # Match upstream VSCode's CI deps (build/azure-pipelines/linux/product-build-linux-node-modules.yml)
+        # plus libfuse2 for AppImage runtime.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            libfuse2 build-essential libx11-dev libxkbfile-dev libsecret-1-dev \
-            libnss3 libgbm-dev libgtk-3-0 libxss1 libasound2 fakeroot rpm
+            pkg-config build-essential fakeroot rpm \
+            libfuse2 libx11-dev libxkbfile-dev libkrb5-dev libsecret-1-dev \
+            libnss3 libgbm-dev libgtk-3-0 libxss1 libasound2
 
       - name: Set up Node 22
         uses: actions/setup-node@v4
