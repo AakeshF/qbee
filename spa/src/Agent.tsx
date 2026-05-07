@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentEvent, ProviderConfig } from '@qbee/shared'
+import type { AgentEvent, ChatMessage, ProviderConfig } from '@qbee/shared'
 import { Markdown } from './Markdown.js'
 
 type DiffStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'rejected'
@@ -19,6 +19,9 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
   const [input, setInput] = useState('')
   const [items, setItems] = useState<Item[]>([])
   const [busy, setBusy] = useState(false)
+  // Persistent conversation across runs. Each run appends the user turn + the
+  // assistant's TEXT response (without tool blocks). Tool history is per-run only.
+  const [conversation, setConversation] = useState<ChatMessage[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
 
@@ -57,6 +60,11 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
 
   const authHeader = () => ({ Authorization: `Basic ${btoa(`qbee:${auth}`)}` })
 
+  const clearConversation = () => {
+    setItems([])
+    setConversation([])
+  }
+
   const run = async () => {
     const text = input.trim()
     if (!text || busy) return
@@ -67,9 +75,10 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
     const ac = new AbortController()
     abortRef.current = ac
 
+    const userTurn: ChatMessage = { role: 'user', content: text }
     const body = {
       provider,
-      messages: [{ role: 'user', content: text }],
+      messages: [...conversation, userTurn],
       workspaceRoot,
       maxIterations: 20,
     }
@@ -92,9 +101,13 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
           pendingText = null
         }
       }
+      // Accumulate the assistant's text-only response so we can append it to the
+      // multi-turn conversation when the run completes.
+      let assistantText = ''
 
       for await (const evt of parseSSE<AgentEvent>(res.body)) {
         if (evt.type === 'text') {
+          assistantText += evt.value
           if (pendingText && pendingText.kind === 'text') {
             pendingText = { kind: 'text', text: pendingText.text + evt.value }
             // Live-update the in-progress text bubble.
@@ -144,6 +157,12 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
           setItems((arr) => [...arr, { kind: 'done', reason: evt.reason }])
         }
       }
+      // Persist this turn into conversation state so the next run sees it.
+      const newConversation: ChatMessage[] = [...conversation, userTurn]
+      if (assistantText.trim()) {
+        newConversation.push({ role: 'assistant', content: assistantText })
+      }
+      setConversation(newConversation)
     } catch (err) {
       if ((err as Error).name !== 'AbortError') {
         setItems((arr) => [...arr, { kind: 'error', message: (err as Error).message }])
@@ -158,12 +177,20 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
 
   return (
     <div style={styles.root}>
+      <div style={styles.subheader}>
+        <span style={styles.turnCount}>
+          turns: {conversation.length / 2 | 0}
+        </span>
+        {conversation.length > 0 && (
+          <button style={styles.clearBtn} onClick={clearConversation} disabled={busy}>
+            Clear conversation
+          </button>
+        )}
+      </div>
       <div ref={listRef} style={styles.list}>
         {items.length === 0 && (
           <div style={styles.hint}>
-            Ask the agent to read, search, or propose edits to files. Diffs render here for review.
-            <br />
-            <small>Apply happens manually for now — copy the diff and apply it via your editor's diff tools. WorkspaceEdit RPC ships in Phase 4.5.</small>
+            Ask the agent to read, search, or propose edits to files. Click Apply on diffs to write via WorkspaceEdit. Conversation persists across runs — use Clear to start fresh.
           </div>
         )}
         {items.map((item, i) => (
@@ -330,6 +357,9 @@ async function* parseSSE<T>(body: ReadableStream<Uint8Array>): AsyncIterable<T> 
 
 const styles: Record<string, React.CSSProperties> = {
   root: { display: 'flex', flexDirection: 'column', height: '100%' },
+  subheader: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderBottom: '1px solid #2a2a2a', fontSize: 11, color: '#888' },
+  turnCount: { fontFamily: 'monospace', flex: 1 },
+  clearBtn: { background: 'transparent', border: '1px solid #444', color: '#aaa', padding: '2px 8px', borderRadius: 3, fontSize: 10, cursor: 'pointer' },
   list: { flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 6 },
   hint: { opacity: 0.5, fontSize: 13, lineHeight: 1.5 },
   msg: { padding: '8px 10px', borderRadius: 6, fontSize: 13, lineHeight: 1.5 },

@@ -151,8 +151,74 @@ jobs:
             .build/dist/QBee-*.AppImage.sha256
             .build/dist/QBee-*.AppImage.asc
 
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        # Git Bash is what the build script targets. windows-latest has it as
+        # bash on PATH; this default makes every `run:` use it.
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~\.pnpm-store
+          key: pnpm-windows-x64-${{ hashFiles('**/pnpm-lock.yaml') }}
+
+      - name: Cache editor node_modules
+        uses: actions/cache@v4
+        with:
+          path: editor/node_modules
+          key: editor-npm-windows-x64-${{ hashFiles('editor/package-lock.json') }}
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Install editor deps
+        # Native modules need MSVC build tools — windows-latest has them.
+        working-directory: editor
+        run: npm install --legacy-peer-deps
+        shell: cmd
+
+      - name: Build Windows zip
+        env:
+          ARCH: x64
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: bash scripts/build-windows.sh
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QBee-windows-x64
+          path: |
+            .build/dist/QBee-*.zip
+            .build/dist/QBee-*.zip.sha256
+
   release:
-    needs: build
+    needs: [build, build-windows]
     runs-on: ubuntu-22.04
     if: startsWith(github.ref, 'refs/tags/')
     steps:
@@ -168,8 +234,11 @@ jobs:
             artifacts/**/QBee-*.AppImage
             artifacts/**/QBee-*.AppImage.sha256
             artifacts/**/QBee-*.AppImage.asc
+            artifacts/**/QBee-*.zip
+            artifacts/**/QBee-*.zip.sha256
           generate_release_notes: true
-          # The .asc glob is intentionally optional — GPG signing only runs when
-          # the GPG_PRIVATE_KEY secret is set. AppImages + .sha256 are still
-          # mandatory; an empty release would be visibly broken.
+          # The .asc and .zip globs are optional — .asc only when GPG_PRIVATE_KEY
+          # secret is set, .zip only on tag pushes after Windows job lands.
+          # AppImages + .sha256 are still de-facto required; an empty release
+          # would be visibly broken anyway.
           fail_on_unmatched_files: false

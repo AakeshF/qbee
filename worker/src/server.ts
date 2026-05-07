@@ -7,7 +7,8 @@
 import path from 'node:path'
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
-import { AgentRunRequest, ChatRequest, CompleteRequest, EchoRequest, RagIndexRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type RagIndexEvent, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
+import { promises as fs } from 'node:fs'
+import { AgentRunRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
 import { createProvider } from './providers/index.js'
 import { runAgent } from './agent/loop.js'
 import { indexWorkspace } from './rag/indexer.js'
@@ -37,6 +38,40 @@ app.addHook('onRequest', async (req, reply) => {
 
 app.get('/api/health', async () => ({ ok: true }))
 
+// FS read for @file mentions. Same workspace-root sandbox as the agent tools:
+// any path that resolves outside workspaceRoot is rejected.
+app.post('/api/fs/read', async (req, reply) => {
+  const parsed = FsReadRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { workspaceRoot, path: relPath, maxBytes } = parsed.data
+  const path = await import('node:path')
+  const root = path.resolve(workspaceRoot)
+  const target = path.resolve(root, relPath)
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    reply.code(400).send({ error: `path '${relPath}' resolves outside the workspace` })
+    return
+  }
+  try {
+    const stat = await fs.stat(target)
+    const bytes = stat.size
+    const fh = await fs.open(target, 'r')
+    try {
+      const buf = Buffer.alloc(Math.min(bytes, maxBytes))
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+      const content = buf.subarray(0, bytesRead).toString('utf8')
+      const response: FsReadResponse = { path: relPath, content, truncated: bytes > maxBytes, bytes }
+      reply.send(response)
+    } finally {
+      await fh.close()
+    }
+  } catch (err) {
+    reply.code(404).send({ error: (err as Error).message })
+  }
+})
+
 app.post('/api/echo', async (req, reply) => {
   const parsed = EchoRequest.safeParse(req.body)
   if (!parsed.success) {
@@ -63,9 +98,32 @@ app.post('/api/echo', async (req, reply) => {
   reply.raw.end()
 })
 
-// Phase 2: API keys read from process.env until SecretStorage RPC lands.
-// apiKeyRef on the ProviderConfig is the env var name (e.g. ANTHROPIC_API_KEY).
-const getApiKeyFromEnv = async (ref: string): Promise<string | undefined> => process.env[ref]
+// In-memory secret store. SPA pushes API keys via /api/secrets/set; worker
+// reads them on every provider call. Persistence is the SPA's responsibility
+// (localStorage today; SecretStorage RPC in v0.4). On worker restart, secrets
+// must be re-pushed — the SPA does this on first /api/health success.
+const secrets = new Map<string, string>()
+const getApiKey = async (ref: string): Promise<string | undefined> => secrets.get(ref) ?? process.env[ref]
+// Alias kept for the existing call sites that already passed this name.
+const getApiKeyFromEnv = getApiKey
+
+app.post('/api/secrets/set', async (req, reply) => {
+  const body = req.body as { key?: unknown; value?: unknown }
+  if (typeof body?.key !== 'string' || typeof body?.value !== 'string') {
+    reply.code(400).send({ error: 'expected { key: string, value: string }' })
+    return
+  }
+  secrets.set(body.key, body.value)
+  reply.send({ ok: true, keys: Array.from(secrets.keys()) })
+})
+
+app.delete('/api/secrets/:key', async (req, reply) => {
+  const { key } = req.params as { key: string }
+  secrets.delete(key)
+  reply.send({ ok: true, keys: Array.from(secrets.keys()) })
+})
+
+app.get('/api/secrets', async () => ({ keys: Array.from(secrets.keys()) }))
 
 app.post('/api/chat', async (req, reply) => {
   const parsed = ChatRequest.safeParse(req.body)

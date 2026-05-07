@@ -116,6 +116,23 @@ export const CompleteResponse = z.object({
 })
 export type CompleteResponse = z.infer<typeof CompleteResponse>
 
+// ─────────────────────────── FS read (for @file mention) ─────────
+
+export const FsReadRequest = z.object({
+  workspaceRoot: z.string(),
+  path: z.string(),
+  maxBytes: z.number().int().positive().max(1024 * 1024).default(64 * 1024),
+})
+export type FsReadRequest = z.infer<typeof FsReadRequest>
+
+export const FsReadResponse = z.object({
+  path: z.string(),
+  content: z.string(),
+  truncated: z.boolean(),
+  bytes: z.number().int().nonnegative(),
+})
+export type FsReadResponse = z.infer<typeof FsReadResponse>
+
 // ─────────────────────────── Embeddings ──────────────────────────
 
 export const EmbedRequest = z.object({

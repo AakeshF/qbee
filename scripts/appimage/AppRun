@@ -34,10 +34,16 @@ random_token() {
 # without bundling it in), fall back to launching the editor unmodified — the
 # sidebar will fail to talk to /api/* but at least the editor opens.
 if [ -d "$WORKER_DIR" ] && [ -f "$WORKER_DIR/server.cjs" ]; then
-	# Use the bundled Node from the editor's resources if shipped, else system node.
-	NODE_BIN="$(command -v node || true)"
+	# Prefer the bundled Node (matches what the worker was tested against);
+	# fall back to system node if the bundle wasn't shipped.
+	NODE_BIN=""
+	if [ -x "$WORKER_DIR/node" ]; then
+		NODE_BIN="$WORKER_DIR/node"
+	elif command -v node >/dev/null 2>&1; then
+		NODE_BIN="$(command -v node)"
+	fi
 	if [ -z "$NODE_BIN" ]; then
-		echo "AppRun: 'node' not found on PATH — required to run the QBee worker." >&2
+		echo "AppRun: no node binary found (bundled or system) — required to run the QBee worker." >&2
 		echo "AppRun: continuing with editor only (AI features disabled)." >&2
 	else
 		export QBEE_WORKER_PORT="$(pick_port)"

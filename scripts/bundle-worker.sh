@@ -10,6 +10,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/.build/worker"
+NODE_VERSION="${NODE_VERSION:-22.22.1}"
+TARGET_OS="${TARGET_OS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"  # linux | darwin | win
+TARGET_ARCH_HOST="$(uname -m)"
+case "${TARGET_ARCH:-$TARGET_ARCH_HOST}" in
+  x86_64|x64) NODE_ARCH=x64 ;;
+  aarch64|arm64) NODE_ARCH=arm64 ;;
+  *) NODE_ARCH="${TARGET_ARCH:-$TARGET_ARCH_HOST}" ;;
+esac
 
 cd "$ROOT/worker"
 
@@ -77,5 +85,36 @@ done
 # Smoke-test the bundle parses. (Doesn't run it — that needs the env.)
 node --check "$OUT/server.cjs"
 
-ls -lh "$OUT/server.cjs"
-echo "✓ worker bundled at $OUT/server.cjs"
+# Bundle a Node runtime so the AppImage / Windows zip don't depend on the
+# user's system Node. Skipped when SKIP_NODE_BUNDLE=1 (e.g. local dev runs).
+if [ "${SKIP_NODE_BUNDLE:-0}" != "1" ]; then
+  echo "==> bundling node ${NODE_VERSION} for ${TARGET_OS}-${NODE_ARCH}"
+  case "$TARGET_OS" in
+    linux)
+      url="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz"
+      curl -fsSL "$url" -o "$OUT/node.tar.xz"
+      tar -xf "$OUT/node.tar.xz" -C "$OUT"
+      mv "$OUT/node-v${NODE_VERSION}-linux-${NODE_ARCH}/bin/node" "$OUT/node"
+      rm -rf "$OUT/node-v${NODE_VERSION}-linux-${NODE_ARCH}" "$OUT/node.tar.xz"
+      chmod +x "$OUT/node"
+      ;;
+    win|windows|cygwin*|mingw*|msys*)
+      url="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-win-${NODE_ARCH}.zip"
+      curl -fsSL "$url" -o "$OUT/node.zip"
+      ( cd "$OUT" && unzip -q node.zip )
+      mv "$OUT/node-v${NODE_VERSION}-win-${NODE_ARCH}/node.exe" "$OUT/node.exe"
+      rm -rf "$OUT/node-v${NODE_VERSION}-win-${NODE_ARCH}" "$OUT/node.zip"
+      ;;
+    darwin)
+      url="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-darwin-${NODE_ARCH}.tar.gz"
+      curl -fsSL "$url" -o "$OUT/node.tar.gz"
+      tar -xf "$OUT/node.tar.gz" -C "$OUT"
+      mv "$OUT/node-v${NODE_VERSION}-darwin-${NODE_ARCH}/bin/node" "$OUT/node"
+      rm -rf "$OUT/node-v${NODE_VERSION}-darwin-${NODE_ARCH}" "$OUT/node.tar.gz"
+      chmod +x "$OUT/node"
+      ;;
+  esac
+fi
+
+ls -lh "$OUT/server.cjs" "$OUT"/node* 2>/dev/null
+echo "✓ worker bundle at $OUT (target: ${TARGET_OS}-${NODE_ARCH})"

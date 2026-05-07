@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatEvent, ChatMessage, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
+import type { ChatEvent, ChatMessage, FsReadResponse, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
 import { Agent } from './Agent.js'
 import { Markdown } from './Markdown.js'
+import { Settings, loadEmbeddingProvider, pushSecretsToWorker } from './Settings.js'
 
 type Msg = ChatMessage & { id: string }
 
@@ -30,11 +31,11 @@ const DEFAULT_PRESETS: ProviderPreset[] = [
 
 export function App() {
   const [auth, setAuth] = useState('dev')
-  const [tab, setTab] = useState<'chat' | 'agent'>('chat')
+  const [tab, setTab] = useState<'chat' | 'agent' | 'settings'>('chat')
   const [presetIdx, setPresetIdx] = useState(0)
   const [model, setModel] = useState(DEFAULT_PRESETS[0]!.config.model)
-  const [workspaceRoot] = useState('/home/aakeshf/projects/qbee') // TODO: pass from editor via URL fragment
-  const [embeddingProvider, setEmbeddingProvider] = useState<ProviderConfig>(DEFAULT_EMBEDDING_PROVIDER)
+  const [workspaceRoot, setWorkspaceRoot] = useState('')
+  const [embeddingProvider, setEmbeddingProvider] = useState<ProviderConfig>(() => loadEmbeddingProvider() ?? DEFAULT_EMBEDDING_PROVIDER)
   const [ragStatus, setRagStatus] = useState<RagStatusResponse | null>(null)
   const [indexProgress, setIndexProgress] = useState<string | null>(null)
   const [input, setInput] = useState('')
@@ -45,7 +46,12 @@ export function App() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.hash.slice(1))
-    setAuth(params.get('auth') ?? 'dev')
+    const a = params.get('auth') ?? 'dev'
+    setAuth(a)
+    setWorkspaceRoot(params.get('workspaceRoot') ?? '')
+    // On load, push any stored API keys to the worker so /api/chat can find them.
+    // Worker is in-memory; if it restarted we need to re-push. Idempotent.
+    pushSecretsToWorker(a)
   }, [])
 
   useEffect(() => {
@@ -117,6 +123,14 @@ export function App() {
     return { cleaned: rest || text, query: rest || text }
   }
 
+  // Detect "@file:path/to/foo.ts" mentions anywhere in the input. Returns the
+  // list of paths plus the original text unchanged (we leave the @file: tokens
+  // in so the assistant sees what the user pointed at).
+  const parseFileMentions = (text: string): string[] => {
+    const matches = Array.from(text.matchAll(/@file:([^\s,;]+)/g))
+    return matches.map((m) => m[1]!).filter(Boolean)
+  }
+
   const fetchRagContext = async (query: string): Promise<string | null> => {
     try {
       const res = await fetch('/api/rag/search', {
@@ -134,18 +148,47 @@ export function App() {
     }
   }
 
+  const fetchFiles = async (paths: string[]): Promise<string | null> => {
+    if (paths.length === 0 || !workspaceRoot) return null
+    const blocks: string[] = []
+    for (const p of paths) {
+      try {
+        const res = await fetch('/api/fs/read', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeader() },
+          body: JSON.stringify({ workspaceRoot, path: p }),
+        })
+        if (!res.ok) {
+          blocks.push(`--- ${p}\n[error: HTTP ${res.status}]`)
+          continue
+        }
+        const json = (await res.json()) as FsReadResponse
+        const note = json.truncated ? ' (truncated)' : ''
+        blocks.push(`--- ${json.path}${note}\n${json.content}`)
+      } catch (err) {
+        blocks.push(`--- ${p}\n[error: ${(err as Error).message}]`)
+      }
+    }
+    return `Files mentioned via @file:\n\n${blocks.join('\n\n')}`
+  }
+
   const send = async () => {
     const text = input.trim()
     if (!text || busy) return
     setInput('')
 
-    // @codebase parsing: if the user prefixed with @codebase, fetch RAG hits
-    // and prepend them as a system message so the model has context.
+    // Parse mentions BEFORE sending. @codebase fetches RAG hits; @file:<path>
+    // fetches one or more file contents. Both are prepended as system messages.
     const { cleaned, query } = parseCodebaseMention(text)
-    let contextSystem: ChatMessage | null = null
+    const filePaths = parseFileMentions(text)
+    const systemMessages: ChatMessage[] = []
     if (query) {
       const ctx = await fetchRagContext(query)
-      if (ctx) contextSystem = { role: 'system', content: ctx }
+      if (ctx) systemMessages.push({ role: 'system', content: ctx })
+    }
+    if (filePaths.length > 0) {
+      const filesCtx = await fetchFiles(filePaths)
+      if (filesCtx) systemMessages.push({ role: 'system', content: filesCtx })
     }
 
     const userMsg: Msg = { id: cryptoId(), role: 'user', content: cleaned }
@@ -161,7 +204,7 @@ export function App() {
     const baseMessages = nextMsgs.slice(0, -1).map(({ role, content }) => ({ role, content }))
     const body = {
       provider,
-      messages: contextSystem ? [contextSystem, ...baseMessages] : baseMessages,
+      messages: systemMessages.length > 0 ? [...systemMessages, ...baseMessages] : baseMessages,
     }
 
     try {
@@ -200,6 +243,7 @@ export function App() {
         <span style={styles.brand}>QBee</span>
         <button style={tabStyle(tab === 'chat')} onClick={() => setTab('chat')}>chat</button>
         <button style={tabStyle(tab === 'agent')} onClick={() => setTab('agent')}>agent</button>
+        <button style={tabStyle(tab === 'settings')} onClick={() => setTab('settings')}>settings</button>
         <select style={styles.select} value={presetIdx} onChange={(e) => setPresetIdx(Number(e.target.value))} disabled={busy}>
           {DEFAULT_PRESETS.map((p, i) => (
             <option key={i} value={i}>
@@ -216,7 +260,9 @@ export function App() {
         </button>
       </header>
       {indexProgress && <div style={styles.indexLine}>{indexProgress}</div>}
-      {tab === 'agent' ? (
+      {tab === 'settings' ? (
+        <Settings auth={auth} embeddingProvider={embeddingProvider} setEmbeddingProvider={setEmbeddingProvider} onClose={() => setTab('chat')} />
+      ) : tab === 'agent' ? (
         <Agent auth={auth} provider={currentProvider} workspaceRoot={workspaceRoot} />
       ) : (
       <>
