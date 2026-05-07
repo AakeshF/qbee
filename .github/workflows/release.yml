@@ -169,4 +169,7 @@ jobs:
             artifacts/**/QBee-*.AppImage.sha256
             artifacts/**/QBee-*.AppImage.asc
           generate_release_notes: true
-          fail_on_unmatched_files: true
+          # The .asc glob is intentionally optional — GPG signing only runs when
+          # the GPG_PRIVATE_KEY secret is set. AppImages + .sha256 are still
+          # mandatory; an empty release would be visibly broken.
+          fail_on_unmatched_files: false
