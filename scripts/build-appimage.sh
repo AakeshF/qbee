@@ -93,7 +93,12 @@ cp -a "$ROOT/spa/dist/." "$APPDIR/qbee-spa/"
 echo "==> 5/5 packaging AppImage"
 mkdir -p "$ROOT/.build/dist"
 OUT="$ROOT/.build/dist/QBee-${VERSION}-${APPIMAGE_ARCH}.AppImage"
-ARCH="$APPIMAGE_ARCH" "$APPIMAGETOOL" --no-appstream "$APPDIR" "$OUT"
+# appimagetool reads ARCH from its environment to label the output. Without an
+# explicit export it walks the AppDir and refuses if it sees mixed architectures
+# (which happens when the bundled worker's better-sqlite3 prebuilds + the editor's
+# native modules don't all match — observed on arm64). Force it via export.
+export ARCH="$APPIMAGE_ARCH"
+"$APPIMAGETOOL" --no-appstream "$APPDIR" "$OUT"
 
 # Checksum so users can verify even without GPG.
 sha256sum "$OUT" > "${OUT}.sha256"
