@@ -143,14 +143,28 @@ ZIP_OUT="$ROOT/.build/dist/QBee-${VERSION}-${ARCH}-mac.zip"
   fi
 )
 
-# DMG: only buildable on macOS via hdiutil. On Linux we ship the zip only —
-# users on Mac unzip and drag-to-Applications instead. genisoimage can produce
-# a .dmg on Linux but Gatekeeper scrutinizes those harder. Stick with zip.
+# DMG: hdiutil sometimes races with Spotlight indexing the freshly-written
+# .app and reports "Resource busy". Retry a few times; fall back to zip-only
+# if it keeps failing. We always ship the zip too — .dmg is just nicer UX
+# (drag-to-Applications window).
 DMG_OUT=""
 if command -v hdiutil >/dev/null 2>&1; then
   DMG_OUT="$ROOT/.build/dist/QBee-${VERSION}-${ARCH}-mac.dmg"
   rm -f "$DMG_OUT"
-  hdiutil create -volname "QBee ${VERSION}" -srcfolder "$PKGDIR/QBee.app" -ov -format UDZO "$DMG_OUT"
+  attempt=0
+  until [ "$attempt" -ge 4 ]; do
+    if hdiutil create -volname "QBee ${VERSION}" -srcfolder "$PKGDIR/QBee.app" -ov -format UDZO "$DMG_OUT" 2>&1; then
+      break
+    fi
+    attempt=$((attempt + 1))
+    echo "    hdiutil attempt $attempt failed; sleeping 10s and retrying" >&2
+    rm -f "$DMG_OUT"
+    sleep 10
+  done
+  if [ ! -f "$DMG_OUT" ]; then
+    echo "::warning::hdiutil failed after 4 attempts; shipping .zip only for ${ARCH}-mac" >&2
+    DMG_OUT=""
+  fi
 fi
 
 # Checksums
