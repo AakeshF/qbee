@@ -32,8 +32,14 @@ const DEFAULT_PRESETS: ProviderPreset[] = [
 export function App() {
   const [auth, setAuth] = useState('dev')
   const [tab, setTab] = useState<'chat' | 'agent' | 'settings'>('chat')
-  const [presetIdx, setPresetIdx] = useState(0)
-  const [model, setModel] = useState(DEFAULT_PRESETS[0]!.config.model)
+  // Restore preset + model from localStorage so launches don't reset to Ollama default.
+  const [presetIdx, setPresetIdx] = useState<number>(() => {
+    const stored = Number(localStorage.getItem('qbee.presetIdx.v1') ?? '0')
+    return Number.isFinite(stored) && stored >= 0 && stored < DEFAULT_PRESETS.length ? stored : 0
+  })
+  const [model, setModel] = useState<string>(() => {
+    return localStorage.getItem('qbee.model.v1') ?? DEFAULT_PRESETS[0]!.config.model
+  })
   const [workspaceRoot, setWorkspaceRoot] = useState('')
   const [embeddingProvider, setEmbeddingProvider] = useState<ProviderConfig>(() => loadEmbeddingProvider() ?? DEFAULT_EMBEDDING_PROVIDER)
   const [ragStatus, setRagStatus] = useState<RagStatusResponse | null>(null)
@@ -54,8 +60,26 @@ export function App() {
     pushSecretsToWorker(a)
   }, [])
 
+  // Switching the preset resets the model to that preset's default unless the
+  // user has explicitly typed a model. We persist whatever model the user
+  // ends up with so subsequent launches restore it.
   useEffect(() => {
-    setModel(DEFAULT_PRESETS[presetIdx]!.config.model)
+    localStorage.setItem('qbee.presetIdx.v1', String(presetIdx))
+  }, [presetIdx])
+
+  useEffect(() => {
+    localStorage.setItem('qbee.model.v1', model)
+  }, [model])
+
+  // First time we see a new preset (after restoring from storage), keep the
+  // restored model for that preset. If the preset is changed later by the
+  // user, default the model to that preset's recommended one.
+  const prevPresetRef = useRef(presetIdx)
+  useEffect(() => {
+    if (prevPresetRef.current !== presetIdx) {
+      setModel(DEFAULT_PRESETS[presetIdx]!.config.model)
+      prevPresetRef.current = presetIdx
+    }
   }, [presetIdx])
 
   useEffect(() => {

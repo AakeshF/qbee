@@ -77,46 +77,36 @@ if [ ! -d "$VSCODE_BUILD_DIR" ]; then
   exit 5
 fi
 
-echo "==> 4/4 assembling package"
+echo "==> 4/5 assembling package"
 PKGDIR="$ROOT/.build/QBee-${ARCH}-win"
 rm -rf "$PKGDIR"
-mkdir -p "$PKGDIR"
-cp -a "$VSCODE_BUILD_DIR/." "$PKGDIR/"
-mkdir -p "$PKGDIR/qbee-worker" "$PKGDIR/qbee-spa"
+mkdir -p "$PKGDIR/app" "$PKGDIR/qbee-worker" "$PKGDIR/qbee-spa"
+# Editor goes into app/ subdir so the launcher can sit at the package root
+# under the same name (QBee.exe) without colliding on Windows's case-insensitive FS.
+cp -a "$VSCODE_BUILD_DIR/." "$PKGDIR/app/"
 cp -a "$ROOT/.build/worker/." "$PKGDIR/qbee-worker/"
 cp -a "$ROOT/spa/dist/." "$PKGDIR/qbee-spa/"
 
-# Find the editor exe — VSCode uses nameShort. We branded as "QBee".
+# Sanity-check the editor binary made it into app/.
 EDITOR_EXE=""
 for cand in "QBee.exe" "qbee.exe" "Qbee.exe"; do
-  if [ -f "$PKGDIR/$cand" ]; then EDITOR_EXE="$cand"; break; fi
+  if [ -f "$PKGDIR/app/$cand" ]; then EDITOR_EXE="$cand"; break; fi
 done
 if [ -z "$EDITOR_EXE" ]; then
-  echo "Could not locate editor .exe in $PKGDIR" >&2
-  ls "$PKGDIR" | head -20 >&2
+  echo "Could not locate editor .exe in $PKGDIR/app" >&2
+  ls "$PKGDIR/app" | head -20 >&2
   exit 6
 fi
-echo "  editor binary: $EDITOR_EXE"
+echo "  editor binary: app/$EDITOR_EXE"
 
-# Launcher .cmd. Starts the bundled worker on a fixed port (18421) and a
-# pseudo-random auth token, then launches the editor with QBEE_WORKER_URL set.
-# Limitations vs the Linux AppRun: no free-port detection (Windows cmd doesn't
-# have a clean way to ask the kernel for one without PowerShell), no ready
-# handshake wait. Acceptable for v0.3 first cut.
-cat > "$PKGDIR/qbee.cmd" <<EOF
-@echo off
-setlocal
-set "HERE=%~dp0"
-set QBEE_WORKER_PORT=18421
-set /a "QBEE_RAND=%RANDOM%%RANDOM%"
-set "QBEE_WORKER_AUTH=qbee%QBEE_RAND%"
-set "QBEE_SPA_DIST=%HERE%qbee-spa"
-set "QBEE_WORKER_URL=http://127.0.0.1:%QBEE_WORKER_PORT%"
-if exist "%HERE%qbee-worker\\node.exe" (
-  start "" /b "%HERE%qbee-worker\\node.exe" "%HERE%qbee-worker\\server.cjs" 1>nul 2>nul
-)
-"%HERE%${EDITOR_EXE}" %*
-EOF
+echo "==> 5/5 building Go launcher → QBee.exe"
+# Cross-compile the Go launcher. windows-latest has Go preinstalled; Linux
+# cross-compiles via GOOS=windows GOARCH=amd64. Both produce the same binary.
+( cd "$ROOT/scripts/launcher" && \
+  GOOS=windows GOARCH="$ARCH" go build -ldflags='-s -w -H=windowsgui' -o "$PKGDIR/QBee.exe" ./... )
+# -H=windowsgui prevents a console window from flashing when the user double-clicks.
+# Sanity check the output.
+file "$PKGDIR/QBee.exe" | head -1
 
 echo "==> packaging zip"
 mkdir -p "$ROOT/.build/dist"
