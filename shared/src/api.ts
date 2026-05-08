@@ -22,6 +22,43 @@ export const WorkerReady = z.object({
 })
 export type WorkerReady = z.infer<typeof WorkerReady>
 
+// ─────────────────────────── In-app updater ───────────────────────
+//
+// AppImage in-place update (Linux only for v0.5). The worker handles the
+// download + SHA verify + atomic replace because the editor renderer doesn't
+// have arbitrary FS access. Other platforms return supported: false.
+
+export const UpdateCheckResponse = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('up_to_date'), current: z.string() }),
+  z.object({
+    status: z.literal('available'),
+    current: z.string(),
+    latest: z.string(),
+    downloadUrl: z.string().url(),
+    sha256Url: z.string().url(),
+    sizeBytes: z.number().int().nonnegative(),
+    releaseNotesUrl: z.string().url(),
+  }),
+  z.object({ status: z.literal('unsupported'), reason: z.string() }),
+  z.object({ status: z.literal('error'), error: z.string() }),
+])
+export type UpdateCheckResponse = z.infer<typeof UpdateCheckResponse>
+
+export const UpdateApplyRequest = z.object({
+  downloadUrl: z.string().url(),
+  sha256Url: z.string().url(),
+})
+export type UpdateApplyRequest = z.infer<typeof UpdateApplyRequest>
+
+export const UpdateProgressEvent = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('downloading'), receivedBytes: z.number(), totalBytes: z.number().nullable() }),
+  z.object({ type: z.literal('verifying') }),
+  z.object({ type: z.literal('replacing') }),
+  z.object({ type: z.literal('done'), targetPath: z.string() }),
+  z.object({ type: z.literal('error'), message: z.string() }),
+])
+export type UpdateProgressEvent = z.infer<typeof UpdateProgressEvent>
+
 // ─────────────────────────── Providers ───────────────────────────
 
 export const ProviderId = z.enum(['openai-compatible', 'anthropic', 'gemini', 'local-llama'])

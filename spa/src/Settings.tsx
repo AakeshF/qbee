@@ -12,7 +12,7 @@
 // "browser-stored token". v1.0 migrates to editor-side SecretStorage.
 
 import { useEffect, useState } from 'react'
-import type { LocalModel, LocalModelsProbeResponse, ProviderConfig } from '@qbee/shared'
+import type { LocalModel, LocalModelsProbeResponse, ProviderConfig, UpdateCheckResponse, UpdateProgressEvent } from '@qbee/shared'
 import { DEFAULT_PRESETS } from './presets.js'
 import { getEditorSetting, setEditorSetting, onEditorSettingChanged } from './editorBridge.js'
 
@@ -106,6 +106,12 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   // loopback and returns whatever's running.
   const [localProbe, setLocalProbe] = useState<LocalModelsProbeResponse | null>(null)
   const [probing, setProbing] = useState(false)
+
+  // In-app updater state. Linux AppImage only in v0.5.
+  const [updateCheck, setUpdateCheck] = useState<UpdateCheckResponse | null>(null)
+  const [updateChecking, setUpdateChecking] = useState(false)
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgressEvent | null>(null)
+  const [updateApplying, setUpdateApplying] = useState(false)
 
   // FIM (inline completions) config — lives in IConfigurationService, not
   // localStorage, because the InlineCompletionProvider on the editor side
@@ -207,6 +213,68 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
     setSecrets({})
     saveSecrets({})
     setSavedNote('cleared all')
+  }
+
+  const checkForUpdate = async () => {
+    setUpdateChecking(true)
+    setUpdateCheck(null)
+    setUpdateProgress(null)
+    try {
+      // currentVersion is best-effort: read from a meta tag the editor host
+      // sets, or fall back to '0.0.0'. The editor wires this for v0.5.
+      const meta = document.querySelector('meta[name="qbee-version"]') as HTMLMetaElement | null
+      const current = meta?.content ?? '0.0.0'
+      const res = await fetch(`/api/update/check?current=${encodeURIComponent(current)}`, { headers: authHeader() })
+      if (!res.ok) {
+        setUpdateCheck({ status: 'error', error: `HTTP ${res.status}` })
+        return
+      }
+      setUpdateCheck((await res.json()) as UpdateCheckResponse)
+    } catch (err) {
+      setUpdateCheck({ status: 'error', error: (err as Error).message })
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
+
+  const applyUpdate = async () => {
+    if (!updateCheck || updateCheck.status !== 'available') return
+    setUpdateApplying(true)
+    setUpdateProgress({ type: 'downloading', receivedBytes: 0, totalBytes: updateCheck.sizeBytes })
+    try {
+      const res = await fetch('/api/update/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
+        body: JSON.stringify({ downloadUrl: updateCheck.downloadUrl, sha256Url: updateCheck.sha256Url }),
+      })
+      if (!res.ok || !res.body) {
+        setUpdateProgress({ type: 'error', message: `apply failed: HTTP ${res.status}` })
+        return
+      }
+      // Parse SSE
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { value, done } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let idx
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, idx)
+          buf = buf.slice(idx + 2)
+          for (const line of block.split('\n')) {
+            if (line.startsWith('data: ')) {
+              try { setUpdateProgress(JSON.parse(line.slice(6)) as UpdateProgressEvent) } catch { /* ignore */ }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      setUpdateProgress({ type: 'error', message: (err as Error).message })
+    } finally {
+      setUpdateApplying(false)
+    }
   }
 
   const probeLocalModels = async () => {
@@ -403,9 +471,81 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
           </div>
           <button style={styles.primaryBtn} onClick={saveEmbeddingProvider}>Save embedding endpoint</button>
         </section>
+
+        <section style={styles.section}>
+          <div style={styles.sectionTitle}>Updates</div>
+          <div style={styles.sectionHint}>
+            Check for new QBee releases and (Linux only) download + install in place.
+            Other platforms link to the release page.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button style={styles.primaryBtn} onClick={checkForUpdate} disabled={updateChecking || updateApplying}>
+              {updateChecking ? 'Checking…' : 'Check for updates'}
+            </button>
+            {updateCheck && updateCheck.status === 'up_to_date' && (
+              <span style={styles.savedNote}>QBee {updateCheck.current} is up to date.</span>
+            )}
+            {updateCheck && updateCheck.status === 'available' && (
+              <span style={styles.savedNote}>{updateCheck.latest} available — you have {updateCheck.current}.</span>
+            )}
+            {updateCheck && updateCheck.status === 'unsupported' && (
+              <span style={styles.errorNote}>Auto-update not supported here: {updateCheck.reason}.</span>
+            )}
+            {updateCheck && updateCheck.status === 'error' && (
+              <span style={styles.errorNote}>Check failed: {updateCheck.error}</span>
+            )}
+          </div>
+          {updateCheck && updateCheck.status === 'available' && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button style={styles.primaryBtn} onClick={applyUpdate} disabled={updateApplying}>
+                {updateApplying ? 'Installing…' : `Download & install ${updateCheck.latest}`}
+              </button>
+              <a href={updateCheck.releaseNotesUrl} target="_blank" rel="noopener noreferrer" style={{ color: '#7aa6e0', fontSize: 11 }}>
+                Release notes
+              </a>
+            </div>
+          )}
+          {updateProgress && (
+            <div style={updateProgressBlock}>
+              {updateProgress.type === 'downloading' && (
+                <span>
+                  Downloading… {formatBytes(updateProgress.receivedBytes)}{updateProgress.totalBytes ? ` / ${formatBytes(updateProgress.totalBytes)}` : ''}
+                  {updateProgress.totalBytes ? ` (${Math.round(updateProgress.receivedBytes / updateProgress.totalBytes * 100)}%)` : ''}
+                </span>
+              )}
+              {updateProgress.type === 'verifying' && <span>Verifying SHA-256…</span>}
+              {updateProgress.type === 'replacing' && <span>Replacing the AppImage in place…</span>}
+              {updateProgress.type === 'done' && (
+                <span style={{ color: '#9eccaa' }}>
+                  ✓ Update installed at {updateProgress.targetPath}. Restart QBee to use it.
+                </span>
+              )}
+              {updateProgress.type === 'error' && (
+                <span style={{ color: '#ff9090' }}>✗ {updateProgress.message}</span>
+              )}
+            </div>
+          )}
+        </section>
       </div>
     </div>
   )
+}
+
+function formatBytes(n: number): string {
+  if (n >= 1e9) return `${(n / 1e9).toFixed(2)} GB`
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)} MB`
+  if (n >= 1e3) return `${(n / 1e3).toFixed(0)} KB`
+  return `${n} B`
+}
+
+const updateProgressBlock: React.CSSProperties = {
+  fontSize: 11,
+  fontFamily: 'monospace',
+  padding: '8px 10px',
+  background: '#1d2433',
+  border: '1px solid #2a3548',
+  borderRadius: 4,
+  color: '#bcd',
 }
 
 function labelForSource(source: string): string {
@@ -434,6 +574,8 @@ const styles: Record<string, React.CSSProperties> = {
   title: { fontSize: 14, fontWeight: 600 },
   flex: { flex: 1 },
   saved: { fontSize: 11, color: '#9eccaa' },
+  savedNote: { fontSize: 11, color: '#9eccaa' },
+  errorNote: { fontSize: 11, color: '#ff9090' },
   closeBtn: { background: 'transparent', border: '1px solid #444', color: '#ddd', padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer' },
   body: { flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 24 },
   quickActions: { display: 'flex', gap: 8, flexWrap: 'wrap' },

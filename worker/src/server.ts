@@ -8,7 +8,7 @@ import path from 'node:path'
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
 import { promises as fs } from 'node:fs'
-import { AgentRunRequest, ApproveToolRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagProbeRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagProbeResponse, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
+import { AgentRunRequest, ApproveToolRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagProbeRequest, RagSearchRequest, UpdateApplyRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagProbeResponse, type RagSearchResponse, type RagStatusResponse, type UpdateProgressEvent } from '@qbee/shared'
 import { createProvider } from './providers/index.js'
 import { runAgent } from './agent/loop.js'
 import { indexWorkspace } from './rag/indexer.js'
@@ -17,6 +17,7 @@ import { RagStore } from './rag/store.js'
 import { RagWatcher } from './rag/watcher.js'
 import { formatEditorContext } from './editorContext.js'
 import { probeLocalModels } from './localModelsProbe.js'
+import { applyUpdate, checkForUpdate } from './updater.js'
 
 const REQUESTED_PORT = Number(process.env.QBEE_WORKER_PORT ?? 8421)
 const AUTH = process.env.QBEE_WORKER_AUTH ?? 'dev'
@@ -131,6 +132,37 @@ app.get('/api/secrets', async () => ({ keys: Array.from(secrets.keys()) }))
 // llama.cpp). Used by the dashboard's "Detect local models" button.
 app.get('/api/local-models/probe', async () => {
   return await probeLocalModels()
+})
+
+// In-app updater: check + apply. Linux AppImage only for v0.5.
+app.get('/api/update/check', async (req, reply) => {
+  const current = (req.query as { current?: string } | undefined)?.current ?? '0.0.0'
+  const result = await checkForUpdate(current)
+  reply.send(result)
+})
+
+app.post('/api/update/apply', async (req, reply) => {
+  const parsed = UpdateApplyRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
+  const send = (e: UpdateProgressEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`)
+  try {
+    for await (const evt of applyUpdate(parsed.data.downloadUrl, parsed.data.sha256Url)) {
+      send(evt)
+      if (evt.type === 'done' || evt.type === 'error') break
+    }
+  } catch (err) {
+    send({ type: 'error', message: (err as Error).message })
+  } finally {
+    if (!reply.raw.writableEnded) reply.raw.end()
+  }
 })
 
 app.post('/api/chat', async (req, reply) => {
