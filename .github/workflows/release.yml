@@ -234,9 +234,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { runs-on: macos-13,   arch: x64,   mach_arch: x86_64 }
-          - { runs-on: macos-14,   arch: arm64, mach_arch: arm64  }
+          # macos-13 is GitHub's free Intel runner and chronically queue-starved.
+          # Mark it best-effort so it can't block the release; Apple Silicon
+          # (macos-14, the dominant Mac platform since 2020) is the required path.
+          - { runs-on: macos-13,   arch: x64,   mach_arch: x86_64, optional: true }
+          - { runs-on: macos-14,   arch: arm64, mach_arch: arm64,  optional: false }
     runs-on: ${{ matrix.runs-on }}
+    continue-on-error: ${{ matrix.optional }}
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
