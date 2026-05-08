@@ -86,7 +86,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install editor deps
+        # GITHUB_TOKEN gives @vscode/ripgrep authenticated downloads (anonymous 403s under load).
         working-directory: editor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm install --legacy-peer-deps
 
       - name: Install appimagetool
@@ -204,7 +207,11 @@ jobs:
 
       - name: Install editor deps
         # Native modules need MSVC build tools — windows-latest has them.
+        # GITHUB_TOKEN gives @vscode/ripgrep authenticated downloads from
+        # github.com/microsoft/ripgrep-prebuilt — anonymous hits a 403 under load.
         working-directory: editor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm install --legacy-peer-deps
         shell: cmd
 
@@ -275,7 +282,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install editor deps
+        # GITHUB_TOKEN gives @vscode/ripgrep authenticated downloads (anonymous 403s under load).
         working-directory: editor
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm install --legacy-peer-deps
 
       - name: Build macOS .app + zip
