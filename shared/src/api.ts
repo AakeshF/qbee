@@ -116,16 +116,30 @@ export type AgentRunRequest = z.infer<typeof AgentRunRequest>
 
 // SSE events streamed back during a /api/agent/run.
 // `file_diff` is a proposed write — no disk change happens until the editor applies it.
+// `awaiting_approval` pauses execution until the SPA POSTs to /api/agent/approve.
 export const AgentEvent = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), value: z.string() }),
   z.object({ type: z.literal('tool_use'), id: z.string(), name: z.string(), input: z.unknown() }),
   z.object({ type: z.literal('tool_result'), id: z.string(), name: z.string(), summary: z.string(), isError: z.boolean().optional() }),
   z.object({ type: z.literal('file_diff'), path: z.string(), unifiedDiff: z.string(), oldContent: z.string(), newContent: z.string() }),
   z.object({ type: z.literal('iteration'), index: z.number().int().nonnegative() }),
+  z.object({
+    type: z.literal('awaiting_approval'),
+    approvalId: z.string(),
+    tool: z.string(),
+    command: z.string(),
+    cwd: z.string().optional(),
+  }),
   z.object({ type: z.literal('error'), message: z.string() }),
   z.object({ type: z.literal('done'), reason: z.enum(['end_turn', 'max_iterations', 'cancelled']) }),
 ])
 export type AgentEvent = z.infer<typeof AgentEvent>
+
+export const ApproveToolRequest = z.object({
+  approvalId: z.string(),
+  approved: z.boolean(),
+})
+export type ApproveToolRequest = z.infer<typeof ApproveToolRequest>
 
 // ─────────────────────────── Completion (FIM) ────────────────────
 

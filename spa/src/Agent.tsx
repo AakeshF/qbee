@@ -6,14 +6,34 @@ import { CONFIG_CHANGE_EVENT } from './Settings.js'
 
 type DiffStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'rejected'
 
+type ApprovalStatus = 'pending' | 'approved' | 'denied' | 'auto-approved'
+
 type Item =
   | { kind: 'user'; text: string }
   | { kind: 'text'; text: string }
   | { kind: 'tool_use'; id: string; name: string; input: unknown }
   | { kind: 'tool_result'; id: string; name: string; summary: string; isError?: boolean }
   | { kind: 'file_diff'; diffId: string; path: string; unifiedDiff: string; oldContent: string; newContent: string; status: DiffStatus; error?: string }
+  | { kind: 'awaiting_approval'; approvalId: string; command: string; cwd?: string; status: ApprovalStatus }
   | { kind: 'error'; message: string }
   | { kind: 'done'; reason: string }
+
+function allowListKey(workspaceRoot: string): string {
+  return `qbee.terminal.allow.${workspaceRoot || '_default_'}`
+}
+function loadAllowList(workspaceRoot: string): string[] {
+  try {
+    const raw = localStorage.getItem(allowListKey(workspaceRoot))
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+function saveAllowList(workspaceRoot: string, list: string[]): void {
+  localStorage.setItem(allowListKey(workspaceRoot), JSON.stringify(list))
+}
 
 type Props = { auth: string; workspaceRoot: string; editorContext?: EditorContext }
 
@@ -104,6 +124,35 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
   }
 
   const authHeader = () => ({ Authorization: `Basic ${btoa(`qbee:${auth}`)}` })
+
+  // POST the approval/denial back to the worker. Idempotent on the server side.
+  const submitApproval = async (approvalId: string, approved: boolean): Promise<void> => {
+    try {
+      await fetch('/api/agent/approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
+        body: JSON.stringify({ approvalId, approved }),
+      })
+    } catch {
+      // Best-effort: if the post fails, the run will time out / abort on disconnect.
+    }
+  }
+
+  const approveCommand = (approvalId: string, command: string, alwaysAllow: boolean) => {
+    if (alwaysAllow) {
+      const list = loadAllowList(workspaceRoot)
+      if (!list.includes(command)) {
+        list.push(command)
+        saveAllowList(workspaceRoot, list)
+      }
+    }
+    setItems((arr) => arr.map((it) => (it.kind === 'awaiting_approval' && it.approvalId === approvalId ? { ...it, status: 'approved' as ApprovalStatus } : it)))
+    void submitApproval(approvalId, true)
+  }
+  const denyCommand = (approvalId: string) => {
+    setItems((arr) => arr.map((it) => (it.kind === 'awaiting_approval' && it.approvalId === approvalId ? { ...it, status: 'denied' as ApprovalStatus } : it)))
+    void submitApproval(approvalId, false)
+  }
 
   const clearConversation = () => {
     setItems([])
@@ -197,6 +246,23 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
           ])
         } else if (evt.type === 'iteration') {
           // No UI for iteration boundaries — just for debugging.
+        } else if (evt.type === 'awaiting_approval') {
+          flushText()
+          const allowList = loadAllowList(workspaceRoot)
+          const autoApprove = allowList.includes(evt.command)
+          setItems((arr) => [
+            ...arr,
+            {
+              kind: 'awaiting_approval',
+              approvalId: evt.approvalId,
+              command: evt.command,
+              ...(evt.cwd !== undefined ? { cwd: evt.cwd } : {}),
+              status: autoApprove ? 'auto-approved' : 'pending',
+            },
+          ])
+          if (autoApprove) {
+            void submitApproval(evt.approvalId, true)
+          }
         } else if (evt.type === 'error') {
           flushText()
           setItems((arr) => [...arr, { kind: 'error', message: evt.message }])
@@ -260,7 +326,7 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
           </div>
         )}
         {items.map((item, i) => (
-          <Block key={i} item={item} onApply={applyDiff} onReject={rejectDiff} />
+          <Block key={i} item={item} onApply={applyDiff} onReject={rejectDiff} onApprove={approveCommand} onDeny={denyCommand} />
         ))}
       </div>
       <form
@@ -302,9 +368,11 @@ type BlockProps = {
   item: Item
   onApply: (diffId: string, path: string, oldContent: string, newContent: string) => void
   onReject: (diffId: string) => void
+  onApprove: (approvalId: string, command: string, alwaysAllow: boolean) => void
+  onDeny: (approvalId: string) => void
 }
 
-function Block({ item, onApply, onReject }: BlockProps) {
+function Block({ item, onApply, onReject, onApprove, onDeny }: BlockProps) {
   switch (item.kind) {
     case 'user':
       return (
@@ -337,11 +405,50 @@ function Block({ item, onApply, onReject }: BlockProps) {
       )
     case 'file_diff':
       return <DiffView item={item} onApply={onApply} onReject={onReject} />
+    case 'awaiting_approval':
+      return <ApprovalView item={item} onApprove={onApprove} onDeny={onDeny} />
     case 'error':
       return <div style={styles.error}>error: {item.message}</div>
     case 'done':
       return <div style={styles.done}>— {item.reason} —</div>
   }
+}
+
+type ApprovalItem = Extract<Item, { kind: 'awaiting_approval' }>
+function ApprovalView({
+  item,
+  onApprove,
+  onDeny,
+}: {
+  item: ApprovalItem
+  onApprove: (approvalId: string, command: string, alwaysAllow: boolean) => void
+  onDeny: (approvalId: string) => void
+}) {
+  const statusBadge: Record<ApprovalStatus, { label: string; bg: string }> = {
+    pending: { label: 'awaiting approval', bg: '#4a4a3a' },
+    approved: { label: '✓ approved', bg: '#3a6a3a' },
+    'auto-approved': { label: '✓ auto-approved', bg: '#3a6a3a' },
+    denied: { label: '✗ denied', bg: '#6a3a3a' },
+  }
+  const badge = statusBadge[item.status]
+  return (
+    <div style={styles.approvalBlock}>
+      <div style={styles.approvalHeader}>
+        <span style={styles.approvalLabel}>run_terminal</span>
+        {item.cwd && <span style={styles.approvalCwd}>cwd: {item.cwd}</span>}
+        <span style={{ flex: 1 }} />
+        <span style={{ ...styles.statusBadge, background: badge.bg }}>{badge.label}</span>
+      </div>
+      <pre style={styles.approvalCommand}>$ {item.command}</pre>
+      {item.status === 'pending' && (
+        <div style={styles.approvalActions}>
+          <button style={styles.applyBtn} onClick={() => onApprove(item.approvalId, item.command, false)}>Approve once</button>
+          <button style={styles.applyBtn} onClick={() => onApprove(item.approvalId, item.command, true)} title="Auto-approve future runs of this exact command in this workspace">Always allow</button>
+          <button style={styles.rejectBtn} onClick={() => onDeny(item.approvalId)}>Deny</button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 type DiffItem = Extract<Item, { kind: 'file_diff' }>
@@ -449,6 +556,12 @@ const styles: Record<string, React.CSSProperties> = {
   rejectBtn: { background: '#444', color: '#ddd', border: 'none', padding: '2px 8px', borderRadius: 3, fontSize: 11, cursor: 'pointer' },
   diffError: { color: '#d97070', fontSize: 11, padding: '4px 8px', background: '#3a1a1a' },
   diffPre: { margin: 0, padding: '4px 0', fontSize: 11, fontFamily: 'monospace', overflowX: 'auto', lineHeight: 1.4 },
+  approvalBlock: { border: '1px solid #6a5a3a', borderRadius: 4, overflow: 'hidden', margin: '4px 0', background: '#2a2418' },
+  approvalHeader: { padding: '4px 8px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, borderBottom: '1px solid #4a4030' },
+  approvalLabel: { fontFamily: 'monospace', background: '#5a4a2a', color: 'white', padding: '1px 6px', borderRadius: 3, fontSize: 10 },
+  approvalCwd: { fontSize: 10, opacity: 0.7, fontFamily: 'monospace' },
+  approvalCommand: { margin: 0, padding: '8px 10px', fontFamily: 'monospace', fontSize: 12, color: '#ffd', whiteSpace: 'pre-wrap' as const, wordBreak: 'break-all' as const },
+  approvalActions: { display: 'flex', gap: 6, padding: '4px 8px 8px', borderTop: '1px solid #4a4030' },
   error: { color: '#d97070', fontSize: 12, padding: '4px 8px' },
   done: { fontSize: 11, opacity: 0.5, textAlign: 'center', padding: 4 },
   form: { display: 'flex', gap: 6, padding: 8, borderTop: '1px solid #333' },

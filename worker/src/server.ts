@@ -8,7 +8,7 @@ import path from 'node:path'
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
 import { promises as fs } from 'node:fs'
-import { AgentRunRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
+import { AgentRunRequest, ApproveToolRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
 import { createProvider } from './providers/index.js'
 import { runAgent } from './agent/loop.js'
 import { indexWorkspace } from './rag/indexer.js'
@@ -229,6 +229,16 @@ app.post('/api/complete', async (req, reply) => {
   }
 })
 
+// Pending tool-approval requests, keyed by approvalId. The agent loop's
+// requestApproval callback awaits the resolver; POST /api/agent/approve
+// invokes it. Lives in process memory — a worker restart cancels in-flight runs
+// anyway, so persistence isn't useful.
+const pendingApprovals = new Map<string, (approved: boolean) => void>()
+
+function approvalId(): string {
+  return `appr-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 app.post('/api/agent/run', async (req, reply) => {
   const parsed = AgentRunRequest.safeParse(req.body)
   if (!parsed.success) {
@@ -246,9 +256,31 @@ app.post('/api/agent/run', async (req, reply) => {
   const send = (e: AgentEvent) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`)
 
   const ac = new AbortController()
+  // Track approvalIds raised by THIS run so we can cancel them on disconnect.
+  const ownedApprovalIds = new Set<string>()
   reply.raw.on('close', () => {
     if (!reply.raw.writableEnded) ac.abort()
+    // Resolve any orphan approvals as denied so the agent loop unblocks.
+    for (const id of ownedApprovalIds) {
+      const fn = pendingApprovals.get(id)
+      if (fn) { pendingApprovals.delete(id); fn(false) }
+    }
   })
+
+  // Approval bridge: yield awaiting_approval, wait for /api/agent/approve to
+  // resolve. The agent's tool handler holds the await; SSE push is from this
+  // closure since the generator can't synchronously emit while awaiting.
+  const requestApproval = (req2: { tool: string; command: string; cwd?: string }): Promise<{ approved: boolean }> => {
+    const id = approvalId()
+    ownedApprovalIds.add(id)
+    return new Promise<{ approved: boolean }>((resolve) => {
+      pendingApprovals.set(id, (approved) => {
+        ownedApprovalIds.delete(id)
+        resolve({ approved })
+      })
+      send({ type: 'awaiting_approval', approvalId: id, tool: req2.tool, command: req2.command, ...(req2.cwd !== undefined ? { cwd: req2.cwd } : {}) })
+    })
+  }
 
   try {
     for await (const evt of runAgent({
@@ -258,6 +290,7 @@ app.post('/api/agent/run', async (req, reply) => {
       maxIterations,
       signal: ac.signal,
       getApiKey: getApiKeyFromEnv,
+      requestApproval,
       ...(editorContext !== undefined ? { editorContext } : {}),
     })) {
       send(evt)
@@ -268,6 +301,26 @@ app.post('/api/agent/run', async (req, reply) => {
   } finally {
     if (!reply.raw.writableEnded) reply.raw.end()
   }
+})
+
+// Approve or deny a pending run_terminal command. The SPA POSTs here in
+// response to an awaiting_approval event. Idempotent: resolving twice is a
+// no-op because the resolver is removed on first call.
+app.post('/api/agent/approve', async (req, reply) => {
+  const parsed = ApproveToolRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ error: parsed.error.message })
+    return
+  }
+  const { approvalId: id, approved } = parsed.data
+  const resolver = pendingApprovals.get(id)
+  if (!resolver) {
+    reply.code(404).send({ error: 'approval not found or already resolved' })
+    return
+  }
+  pendingApprovals.delete(id)
+  resolver(approved)
+  reply.send({ ok: true })
 })
 
 // Per-workspace RAG store cache. Each workspace has one .qbee/index.sqlite, and we

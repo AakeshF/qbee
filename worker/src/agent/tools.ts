@@ -7,6 +7,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { promisify } from 'node:util'
 import { createTwoFilesPatch } from 'diff'
+import { runShellCommand, formatTerminalResult } from './runTerminal.js'
 
 const exec = promisify(execCb)
 
@@ -18,9 +19,20 @@ export type ToolDef = {
 
 export type ToolHandler = (input: any, ctx: ToolCtx) => Promise<ToolResult>
 
+// Approval request the run_terminal handler raises before executing. The
+// transport (HTTP /api/agent/approve) lives in worker/src/server.ts.
+export type ApprovalRequest = {
+  tool: string
+  command: string
+  cwd?: string
+}
+
 export type ToolCtx = {
   workspaceRoot: string
   signal?: AbortSignal
+  // Optional — when absent, run_terminal denies execution. Wired by
+  // /api/agent/run; standalone calls to runTool() can leave it undefined.
+  requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
 }
 
 export type ToolResult =
@@ -87,6 +99,20 @@ const TOOL_DEFS: ToolDef[] = [
       required: ['path', 'content'],
     },
   },
+  {
+    name: 'run_terminal',
+    description:
+      'Run a shell command in the workspace. The user must approve every command before it runs. Returns the exit code, stdout, and stderr. Use for tests, builds, package installs, git status — anything you would type at a terminal. Avoid commands that hang or wait for input.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: 'Shell command to run. Pipes, redirects, and shell expansions work (executed via sh -c).' },
+        cwd: { type: 'string', description: 'Optional workspace-relative working directory; defaults to the workspace root.' },
+        timeoutMs: { type: 'number', description: 'Optional per-command timeout in milliseconds. Default 60000.' },
+      },
+      required: ['command'],
+    },
+  },
 ]
 
 const HANDLERS: Record<string, ToolHandler> = {
@@ -147,6 +173,42 @@ const HANDLERS: Record<string, ToolHandler> = {
     const truncated = matches.slice(0, 200)
     const note = matches.length > 200 ? `\n… (${matches.length - 200} more truncated)` : ''
     return { kind: 'text', summary: `${matches.length} matches`, content: truncated.join('\n') + note }
+  },
+
+  run_terminal: async (input: { command: string; cwd?: string; timeoutMs?: number }, ctx) => {
+    if (!ctx.requestApproval) {
+      return {
+        kind: 'text',
+        summary: 'run_terminal not available in this context',
+        content: 'Terminal execution requires a UI approval channel. This run is not eligible.',
+        isError: true,
+      }
+    }
+    const cwd = input.cwd ? safePath(ctx.workspaceRoot, input.cwd) : ctx.workspaceRoot
+    const approval = await ctx.requestApproval({ tool: 'run_terminal', command: input.command, ...(input.cwd ? { cwd: input.cwd } : {}) })
+    if (!approval.approved) {
+      return {
+        kind: 'text',
+        summary: `command not approved: ${input.command}`,
+        content: 'The user denied this command. Pick a different approach or explain what you wanted to run.',
+        isError: true,
+      }
+    }
+    const result = await runShellCommand(input.command, cwd, {
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...(ctx.signal ? { signal: ctx.signal } : {}),
+    })
+    const summary = result.timedOut
+      ? `\`${input.command}\` timed out`
+      : result.exitCode === 0
+        ? `\`${input.command}\` ok`
+        : `\`${input.command}\` exit ${result.exitCode ?? `signal ${result.signal}`}`
+    return {
+      kind: 'text',
+      summary,
+      content: formatTerminalResult(input.command, result),
+      ...(result.exitCode === 0 || result.timedOut ? {} : { isError: true }),
+    }
   },
 
   write_file: async (input: { path: string; content: string }, ctx) => {

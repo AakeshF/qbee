@@ -3,16 +3,17 @@
 
 import type { AgentEvent, ChatMessage, EditorContext, ProviderConfig } from '@qbee/shared'
 import { createProvider } from '../providers/index.js'
-import { getToolDefs, runTool, type ToolResult } from './tools.js'
+import { getToolDefs, runTool, type ApprovalRequest, type ToolResult } from './tools.js'
 import { formatEditorContext } from '../editorContext.js'
 
-const SYSTEM_PROMPT = `You are QBee, a coding agent embedded in the user's editor. The user's workspace is open and you have tools to read, search, and propose edits to files.
+const SYSTEM_PROMPT = `You are QBee, a coding agent embedded in the user's editor. The user's workspace is open and you have tools to read, search, run, and propose edits to files.
 
 Tool usage rules:
 - Always use \`read_file\` before proposing a change to a file you have not seen.
 - Use \`grep\` to find relevant code. Prefer specific patterns over broad ones.
 - Use \`list_dir\` to orient yourself in unfamiliar parts of the tree.
 - \`write_file\` does NOT modify the file on disk. It produces a diff for the user to review and approve. Do not call \`write_file\` more than once for the same path in one turn unless you are revising a prior proposal.
+- \`run_terminal\` requires the user to approve every command before it runs. Each call pauses the loop for confirmation. Use it for tests, builds, package installs, lints, git status — not for things that hang or wait for input. Avoid commands that watch (use one-shot flags). If a command is denied, pick a different approach or ask the user what they prefer.
 - Paths are workspace-relative.
 - Stop and explain when you have enough information; do not call tools you do not need.
 
@@ -26,6 +27,9 @@ export type AgentLoopOptions = {
   signal?: AbortSignal
   getApiKey: (ref: string) => Promise<string | undefined>
   editorContext?: EditorContext
+  // Optional: how the run_terminal tool gates user approval. When omitted,
+  // run_terminal returns an isError result (denied by default).
+  requestApproval?: (req: ApprovalRequest) => Promise<{ approved: boolean }>
 }
 
 export async function* runAgent(opts: AgentLoopOptions): AsyncIterable<AgentEvent> {
@@ -94,6 +98,7 @@ export async function* runAgent(opts: AgentLoopOptions): AsyncIterable<AgentEven
       const result = await runTool(tc.name, tc.input, {
         workspaceRoot: opts.workspaceRoot,
         ...(opts.signal ? { signal: opts.signal } : {}),
+        ...(opts.requestApproval ? { requestApproval: opts.requestApproval } : {}),
       })
 
       yield* renderToolResult(tc, result)
