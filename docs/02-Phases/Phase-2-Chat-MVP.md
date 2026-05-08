@@ -30,7 +30,7 @@
 For each backend (Ollama qwen2.5-coder:7b, Anthropic claude-sonnet-4-6, Gemini gemini-2.0-flash):
 
 1. Plain message: "what is the capital of France?" — streams cleanly
-2. With file mention: `@file:CLAUDE.md what's this project about?` — file content is in context
+2. With file mention: `@file:README.md what's this project about?` — file content is in context
 3. Cancel mid-stream — request aborts, SPA UI returns to idle
 4. Switch provider mid-conversation, send another message — works
 

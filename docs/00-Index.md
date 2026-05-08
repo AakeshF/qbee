@@ -1,11 +1,12 @@
 # QBee — Documentation Index
 
-This vault is the durable memory of the project. Every long session should read [[07-Claude/current-task]] first and write back to it at the end.
+The public docs vault. Read [[02-Phases/Roadmap-v1.0]] for the project plan; the Phase notes mirror the original implementation phases (Phase 0 through Phase 6).
 
 ## Map
 
 - [[01-Architecture]] — three-process design, data flow
-- **02-Phases/** — one note per implementation phase (mirrors the approved plan)
+- **02-Phases/** — one note per implementation phase + the v1.0 roadmap
+  - [[02-Phases/Roadmap-v1.0]] — current plan and milestone sequence
   - [[02-Phases/Phase-0-Bootstrap]]
   - [[02-Phases/Phase-1-Plumbing]]
   - [[02-Phases/Phase-2-Chat-MVP]]
@@ -24,14 +25,3 @@ This vault is the durable memory of the project. Every long session should read 
   - [[05-Runbooks/Rebase-Upstream]]
   - [[05-Runbooks/Ship-Release]]
   - [[05-Runbooks/Debug-Worker]]
-- **06-Daily/** — daily log, free-form
-- **07-Claude/** — Claude Code's working memory
-  - [[07-Claude/current-task]] — **start here every session**
-  - [[07-Claude/known-issues]] — bugs/gotchas hit and worked around
-  - [[07-Claude/conventions]] — patterns established that should persist
-
-## External
-
-- Approved plan: `~/.claude/plans/i-wanna-make-my-quizzical-bee.md`
-- Project root: `~/projects/qbee/`
-- Project guide for Claude: `../CLAUDE.md`

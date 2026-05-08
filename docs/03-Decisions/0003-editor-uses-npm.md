@@ -5,7 +5,7 @@
 
 ## Context
 
-The original plan and CLAUDE.md said: "VSCode upstream uses yarn classic in `editor/`. The outer workspace uses pnpm; `editor/` is the only yarn." On Phase 0 first build, this turned out to be wrong.
+The original plan said: "VSCode upstream uses yarn classic in `editor/`. The outer workspace uses pnpm; `editor/` is the only yarn." On Phase 0 first build, this turned out to be wrong.
 
 When we cloned `microsoft/vscode` at upstream `98cb242836`, we found:
 - `editor/package-lock.json` (no `yarn.lock`)
@@ -28,7 +28,7 @@ Use `npm install --legacy-peer-deps` and `npm run watch` inside `editor/`.
 
 ## Implications
 
-- CLAUDE.md updated: "Use pnpm at the workspace root. Inside `editor/` use npm — never `pnpm install` there."
+- Project conventions: pnpm at the workspace root; npm inside `editor/`. Never `pnpm install` there.
 - `docs/02-Phases/Phase-0-Bootstrap.md` updated: build command is `cd editor && npm install --legacy-peer-deps && npm run watch`.
 - We do not need yarn installed at all. (`~/.local/bin/yarn` was installed during Phase 0 before the discovery; it can be removed but is harmless.)
 

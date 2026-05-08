@@ -36,6 +36,74 @@ Everything else in this roadmap is in service of these landing well: reliability
 
 ---
 
+## Feature surface today
+
+What a user actually gets in v0.4.4. Each piece below is the foundation the milestones extend.
+
+### Chat tab
+
+Provider preset picker (Ollama / Anthropic / Gemini / OpenAI-compatible / custom OpenAI-compatible), editable model field, streaming responses with markdown + code-block highlighting. Two mention types:
+
+- **`@codebase <query>`** — runs a hybrid retrieval (sqlite-vec + FTS5 with reciprocal-rank fusion) against the indexed workspace and prepends the top-K chunks as context.
+- **`@file:path/to/file.ts`** — direct file injection without going through retrieval.
+
+Provider preset and model selection persist to localStorage between sessions. Stop button aborts mid-stream.
+
+### Agent tab
+
+A ReAct-loop coding agent. The user writes a task, the model gets a small toolbox and works iteratively.
+
+**Tools** (`worker/src/agent/tools.ts`):
+
+| Tool | Purpose |
+|---|---|
+| `read_file` | Reads a workspace-relative file and returns its contents |
+| `list_dir` | Lists entries in a workspace-relative directory |
+| `grep` | Regex search across the workspace via ripgrep, up to 200 matches, optional glob filter |
+| `write_file` | **Does NOT actually write.** Computes a diff and emits a `file_diff` event for the user to review |
+
+**Loop** (`worker/src/agent/loop.ts`):
+
+1. Worker sends the user's message + tool definitions to the provider.
+2. Provider streams back text + zero-or-more `tool_use` blocks.
+3. For each `tool_use`, worker executes the tool locally (FS read / ripgrep / diff computation) and appends a `tool_result`.
+4. Loop back to (1) with the augmented conversation.
+5. Stops when the provider stops calling tools or `maxIterations` is hit.
+
+The transport is SSE from `POST /api/agent/run` — every text chunk, tool call, tool result, and file diff streams back as a typed event the SPA renders incrementally.
+
+**The load-bearing safety invariant:** **the worker never writes to the workspace.** When the model calls `write_file`, the worker computes the diff and emits `{ path, before, after }`. The SPA renders red/green diff with **Apply** and **Reject** buttons. Apply sends a `postMessage` to the editor host, which calls VSCode's `IBulkEditService` — the only path that actually mutates files. The worker physically lacks a write path back into the workspace; the architecture enforces what the system prompt also says.
+
+This invariant is non-negotiable through v1.0. Every milestone that touches the agent (v0.5 `run_terminal`, v0.8 worktrees + domain tools) keeps it: terminal commands need user approval per-command; agent worktrees move writes into a sandbox before they reach the live tree.
+
+### Settings tab
+
+API key inputs for Anthropic / Gemini / OpenAI (or any OpenAI-compatible token), persisted to localStorage and pushed to the worker via `/api/secrets/set`. Embedding endpoint configuration (base URL + model) for `@codebase`. No environment variables required for any provider.
+
+> Threat model note: localStorage is "browser-stored token" — fine for personal-machine use, suboptimal for shared machines. v1.0 migrates to editor-side `SecretStorage`. Marked TODO in `Settings.tsx:7`.
+
+### Inline FIM completions
+
+Ghost-text completions as you type. 150ms debounce, LRU cache keyed on (language, prefix-tail, suffix-head), per-language allow-list. FIM-template-aware — auto-detects Qwen2.5-Coder, DeepSeek-Coder, Codestral, StarCoder2 templates. Configurable via `qbee.inlineCompletions.*` settings: provider, model, baseUrl, maxTokens.
+
+Today this requires a running provider (local Ollama / LM Studio / llama.cpp, or a cloud key). v0.6's bundled local model removes that gate.
+
+### Hybrid RAG / `@codebase`
+
+`better-sqlite3` + `sqlite-vec` + FTS5 with reciprocal-rank fusion. **Index** button in chat header kicks off the initial pass. Once it lands, a `chokidar` watcher catches file changes and re-indexes within ~2s. Chunker today is fixed-window 40 lines; v0.5's tree-sitter chunking replaces it with function/class granularity.
+
+The store lives at `<workspace>/.qbee/index.sqlite`. Schema is unstable through v0.5 (tree-sitter migration); locks at v1.0.
+
+### Cross-platform packaging
+
+Linux AppImage, Windows portable zip with Go launcher, macOS .app bundle (.dmg + .zip on Apple Silicon). The Go launcher (`scripts/launcher/`) is a single ~2 MB binary that resolves the editor + worker layout per-platform, picks a free port + random auth token, sets `QBEE_WORKER_URL` + `QBEE_WORKER_AUTH`, and `exec`s the editor with the right env. macOS Intel is currently best-effort in CI (free Intel runner is queue-starved); see v0.9 for the resolution path.
+
+### In-app updater
+
+`QBee: Check for Updates` command + a background check 10s after launch. Compares `product.json` version against the latest GitHub release; opens the release page if newer. v0.5 promotes this to in-place download/replace/restart.
+
+---
+
 ## What's already shipped (v0.3–v0.4)
 
 Marked done so the milestones below stay focused on what's actually pending.

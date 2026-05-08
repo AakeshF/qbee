@@ -69,3 +69,9 @@ scripts/launcher/qbee-launcher
 
 # Local-only kickoff prompt — replace with a real README on first sharing
 KICKOFF-PROMPT.md
+
+# Project-private working notes — stay local, don't ship to GitHub
+CLAUDE.md
+.claude/
+docs/06-Daily/
+docs/07-Claude/

@@ -144,4 +144,4 @@ MIT, inherited from `microsoft/vscode`.
 
 ## Acknowledgments
 
-Built on top of VSCode (Microsoft, MIT). Open VSX (Eclipse Foundation) for the extension gallery. `sqlite-vec` (Alex Garcia) for the vector store. Anthropic / Google for the models that drove most of this code into existence.
+Built on top of VSCode (Microsoft, MIT). Open VSX (Eclipse Foundation) for the extension gallery. `sqlite-vec` (Alex Garcia) for the vector store.
