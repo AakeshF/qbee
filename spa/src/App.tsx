@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatEvent, ChatMessage, FsReadResponse, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
+import type { ChatEvent, ChatMessage, EditorContext, FsReadResponse, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
 import { Agent } from './Agent.js'
 import { Markdown } from './Markdown.js'
 import { Settings, loadEmbeddingProvider, pushSecretsToWorker } from './Settings.js'
@@ -47,6 +47,10 @@ export function App() {
   const [input, setInput] = useState('')
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
+  // Editor context (active file, selection, open tabs) pushed by the editor host
+  // via webview postMessage. Forwarded to /api/chat and /api/agent/run so the
+  // model knows what the user is looking at without explicit @file: mentions.
+  const [editorContext, setEditorContext] = useState<EditorContext | undefined>(undefined)
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLElement | null>(null)
 
@@ -58,6 +62,20 @@ export function App() {
     // On load, push any stored API keys to the worker so /api/chat can find them.
     // Worker is in-memory; if it restarted we need to re-push. Idempotent.
     pushSecretsToWorker(a)
+  }, [])
+
+  // Listen for editor state pushed from the editor host (active file, selection,
+  // open tabs). When running standalone (Vite dev outside the editor), no host is
+  // posting messages and editorContext stays undefined — chat/agent still work,
+  // they just don't have IDE awareness.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      const data = e.data
+      if (!data || typeof data !== 'object' || data.type !== 'editor_state_update') return
+      setEditorContext(data.payload as EditorContext)
+    }
+    window.addEventListener('message', handler)
+    return () => window.removeEventListener('message', handler)
   }, [])
 
   // Switching the preset resets the model to that preset's default unless the
@@ -226,9 +244,12 @@ export function App() {
 
     const provider: ProviderConfig = { ...DEFAULT_PRESETS[presetIdx]!.config, model }
     const baseMessages = nextMsgs.slice(0, -1).map(({ role, content }) => ({ role, content }))
-    const body = {
+    const body: { provider: ProviderConfig; messages: ChatMessage[]; editorContext?: EditorContext } = {
       provider,
       messages: systemMessages.length > 0 ? [...systemMessages, ...baseMessages] : baseMessages,
+    }
+    if (editorContext && (editorContext.activeFile || editorContext.selection || (editorContext.openFiles && editorContext.openFiles.length > 0))) {
+      body.editorContext = editorContext
     }
 
     try {
@@ -287,7 +308,7 @@ export function App() {
       {tab === 'settings' ? (
         <Settings auth={auth} embeddingProvider={embeddingProvider} setEmbeddingProvider={setEmbeddingProvider} onClose={() => setTab('chat')} />
       ) : tab === 'agent' ? (
-        <Agent auth={auth} provider={currentProvider} workspaceRoot={workspaceRoot} />
+        <Agent auth={auth} provider={currentProvider} workspaceRoot={workspaceRoot} {...(editorContext ? { editorContext } : {})} />
       ) : (
       <>
       <main ref={listRef as React.RefObject<HTMLElement>} style={styles.list}>
@@ -310,6 +331,7 @@ export function App() {
           </div>
         ))}
       </main>
+      <ContextChip ctx={editorContext} />
       <form
         style={styles.form}
         onSubmit={(e) => {
@@ -346,6 +368,46 @@ export function App() {
       )}
     </div>
   )
+}
+
+function ContextChip({ ctx }: { ctx: EditorContext | undefined }) {
+  if (!ctx || (!ctx.activeFile && !ctx.selection)) return null
+  const file = ctx.activeFile ?? '(no file)'
+  const sel = ctx.selection
+  const label = sel
+    ? `${file} · L${sel.startLine + 1}–${sel.endLine + 1} selected`
+    : ctx.cursorLine !== undefined
+      ? `${file} · L${ctx.cursorLine + 1}`
+      : file
+  return (
+    <div style={contextChipStyles.root} title={sel ? sel.text.slice(0, 400) : file}>
+      <span style={contextChipStyles.icon}>📄</span>
+      <span style={contextChipStyles.label}>{label}</span>
+      <span style={contextChipStyles.hint}>auto-context</span>
+    </div>
+  )
+}
+
+const contextChipStyles: Record<string, React.CSSProperties> = {
+  root: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '4px 10px',
+    margin: '0 8px 4px',
+    background: '#262d3a',
+    border: '1px solid #3a4a6a',
+    borderRadius: 4,
+    fontSize: 11,
+    color: '#bcd',
+    fontFamily: 'monospace',
+    overflow: 'hidden',
+    whiteSpace: 'nowrap',
+    textOverflow: 'ellipsis',
+  },
+  icon: { flexShrink: 0 },
+  label: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' },
+  hint: { fontSize: 9, color: '#7a90b0', textTransform: 'uppercase', letterSpacing: 0.5, flexShrink: 0 },
 }
 
 function tabStyle(active: boolean): React.CSSProperties {

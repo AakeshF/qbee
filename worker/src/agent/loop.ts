@@ -1,9 +1,10 @@
 // ReAct-style tool-use loop. Drives a Provider.chat with the agent tool list.
 // Yields events for the SSE stream: text/tool_use/tool_result/file_diff/iteration/done/error.
 
-import type { AgentEvent, ChatMessage, ProviderConfig } from '@qbee/shared'
+import type { AgentEvent, ChatMessage, EditorContext, ProviderConfig } from '@qbee/shared'
 import { createProvider } from '../providers/index.js'
 import { getToolDefs, runTool, type ToolResult } from './tools.js'
+import { formatEditorContext } from '../editorContext.js'
 
 const SYSTEM_PROMPT = `You are QBee, a coding agent embedded in the user's editor. The user's workspace is open and you have tools to read, search, and propose edits to files.
 
@@ -24,12 +25,17 @@ export type AgentLoopOptions = {
   maxIterations: number
   signal?: AbortSignal
   getApiKey: (ref: string) => Promise<string | undefined>
+  editorContext?: EditorContext
 }
 
 export async function* runAgent(opts: AgentLoopOptions): AsyncIterable<AgentEvent> {
   const provider = createProvider(opts.providerConfig, opts.getApiKey)
   const toolDefs = getToolDefs()
-  const messages: ChatMessage[] = [{ role: 'system', content: SYSTEM_PROMPT }, ...opts.initialMessages]
+  const editorContextBlock = formatEditorContext(opts.editorContext)
+  const systemContent = editorContextBlock
+    ? `${SYSTEM_PROMPT}\n\nThe user is currently looking at:\n${editorContextBlock}`
+    : SYSTEM_PROMPT
+  const messages: ChatMessage[] = [{ role: 'system', content: systemContent }, ...opts.initialMessages]
 
   for (let i = 0; i < opts.maxIterations; i++) {
     if (opts.signal?.aborted) {

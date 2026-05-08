@@ -35,6 +35,32 @@ export const ProviderConfig = z.object({
 })
 export type ProviderConfig = z.infer<typeof ProviderConfig>
 
+// ─────────────────────────── Editor context ─────────────────────
+//
+// Snapshot of what the user is currently looking at. Pushed from the editor
+// host to the SPA via postMessage; SPA includes it in /api/chat and
+// /api/agent/run requests so the model knows what file is active without
+// the user having to type @file: mentions.
+
+export const EditorContext = z.object({
+  // Workspace-relative path. Absent when no editor is focused (welcome page,
+  // settings, etc.).
+  activeFile: z.string().optional(),
+  // Inclusive line range; both 0-based.
+  selection: z
+    .object({
+      startLine: z.number().int().nonnegative(),
+      endLine: z.number().int().nonnegative(),
+      text: z.string(),
+    })
+    .optional(),
+  // 0-based line of the primary cursor.
+  cursorLine: z.number().int().nonnegative().optional(),
+  // Workspace-relative paths of all open editors (deduped, max ~20).
+  openFiles: z.array(z.string()).max(50).optional(),
+})
+export type EditorContext = z.infer<typeof EditorContext>
+
 // ─────────────────────────── Chat ────────────────────────────────
 
 export const ChatRole = z.enum(['system', 'user', 'assistant', 'tool'])
@@ -62,6 +88,7 @@ export const ChatRequest = z.object({
   tools: z.array(z.unknown()).optional(),
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
+  editorContext: EditorContext.optional(),
 })
 export type ChatRequest = z.infer<typeof ChatRequest>
 
@@ -83,6 +110,7 @@ export const AgentRunRequest = z.object({
   messages: z.array(ChatMessage),
   workspaceRoot: z.string(),
   maxIterations: z.number().int().positive().max(50).default(20),
+  editorContext: EditorContext.optional(),
 })
 export type AgentRunRequest = z.infer<typeof AgentRunRequest>
 

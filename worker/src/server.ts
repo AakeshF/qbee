@@ -15,6 +15,7 @@ import { indexWorkspace } from './rag/indexer.js'
 import { retrieve } from './rag/retriever.js'
 import { RagStore } from './rag/store.js'
 import { RagWatcher } from './rag/watcher.js'
+import { formatEditorContext } from './editorContext.js'
 
 const REQUESTED_PORT = Number(process.env.QBEE_WORKER_PORT ?? 8421)
 const AUTH = process.env.QBEE_WORKER_AUTH ?? 'dev'
@@ -131,8 +132,16 @@ app.post('/api/chat', async (req, reply) => {
     reply.code(400).send({ error: parsed.error.message })
     return
   }
-  const { provider: providerConfig, messages, maxTokens, temperature } = parsed.data
-  app.log.info({ provider: providerConfig.id, model: providerConfig.model, messages: messages.length }, 'chat: starting')
+  const { provider: providerConfig, messages, maxTokens, temperature, editorContext } = parsed.data
+  app.log.info({ provider: providerConfig.id, model: providerConfig.model, messages: messages.length, hasEditorContext: editorContext !== undefined }, 'chat: starting')
+
+  // If the editor pushed context (active file / selection / open tabs), prepend
+  // it as a system message so the model knows what the user is currently looking
+  // at without them having to type @file: mentions.
+  const editorContextBlock = formatEditorContext(editorContext)
+  const augmentedMessages = editorContextBlock
+    ? [{ role: 'system' as const, content: editorContextBlock }, ...messages]
+    : messages
 
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -152,7 +161,7 @@ app.post('/api/chat', async (req, reply) => {
   try {
     const provider = createProvider(providerConfig, getApiKeyFromEnv)
     for await (const evt of provider.chat({
-      messages,
+      messages: augmentedMessages,
       ...(maxTokens !== undefined ? { maxTokens } : {}),
       ...(temperature !== undefined ? { temperature } : {}),
       signal: ac.signal,
@@ -219,8 +228,8 @@ app.post('/api/agent/run', async (req, reply) => {
     reply.code(400).send({ error: parsed.error.message })
     return
   }
-  const { provider: providerConfig, messages, workspaceRoot, maxIterations } = parsed.data
-  app.log.info({ provider: providerConfig.id, model: providerConfig.model, workspaceRoot, messages: messages.length }, 'agent: starting')
+  const { provider: providerConfig, messages, workspaceRoot, maxIterations, editorContext } = parsed.data
+  app.log.info({ provider: providerConfig.id, model: providerConfig.model, workspaceRoot, messages: messages.length, hasEditorContext: editorContext !== undefined }, 'agent: starting')
 
   reply.raw.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -242,6 +251,7 @@ app.post('/api/agent/run', async (req, reply) => {
       maxIterations,
       signal: ac.signal,
       getApiKey: getApiKeyFromEnv,
+      ...(editorContext !== undefined ? { editorContext } : {}),
     })) {
       send(evt)
       if (evt.type === 'done' || evt.type === 'error') break

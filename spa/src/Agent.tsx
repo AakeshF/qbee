@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentEvent, ChatMessage, ProviderConfig } from '@qbee/shared'
+import type { AgentEvent, ChatMessage, EditorContext, ProviderConfig } from '@qbee/shared'
 import { Markdown } from './Markdown.js'
 
 type DiffStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'rejected'
@@ -13,9 +13,9 @@ type Item =
   | { kind: 'error'; message: string }
   | { kind: 'done'; reason: string }
 
-type Props = { auth: string; provider: ProviderConfig; workspaceRoot: string }
+type Props = { auth: string; provider: ProviderConfig; workspaceRoot: string; editorContext?: EditorContext }
 
-export function Agent({ auth, provider, workspaceRoot }: Props) {
+export function Agent({ auth, provider, workspaceRoot, editorContext }: Props) {
   const [input, setInput] = useState('')
   const [items, setItems] = useState<Item[]>([])
   const [busy, setBusy] = useState(false)
@@ -76,11 +76,14 @@ export function Agent({ auth, provider, workspaceRoot }: Props) {
     abortRef.current = ac
 
     const userTurn: ChatMessage = { role: 'user', content: text }
-    const body = {
+    const body: { provider: ProviderConfig; messages: ChatMessage[]; workspaceRoot: string; maxIterations: number; editorContext?: EditorContext } = {
       provider,
       messages: [...conversation, userTurn],
       workspaceRoot,
       maxIterations: 20,
+    }
+    if (editorContext && (editorContext.activeFile || editorContext.selection || (editorContext.openFiles && editorContext.openFiles.length > 0))) {
+      body.editorContext = editorContext
     }
 
     try {
