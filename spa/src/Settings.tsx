@@ -12,7 +12,7 @@
 // "browser-stored token". v1.0 migrates to editor-side SecretStorage.
 
 import { useEffect, useState } from 'react'
-import type { ProviderConfig } from '@qbee/shared'
+import type { LocalModel, LocalModelsProbeResponse, ProviderConfig } from '@qbee/shared'
 import { DEFAULT_PRESETS } from './presets.js'
 
 const STORAGE_KEY = 'qbee.secrets.v1'
@@ -97,6 +97,11 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   const [agentPresetIdx, setAgentPresetIdxState] = useState<number>(() => readPresetIdx(AGENT_PRESET_KEY, 1))
   const [agentModel, setAgentModelState] = useState<string>(() => readModel(AGENT_MODEL_KEY, DEFAULT_PRESETS[1]!.config.model))
 
+  // Local-model auto-detect. Worker probes Ollama / LM Studio / llama.cpp on
+  // loopback and returns whatever's running.
+  const [localProbe, setLocalProbe] = useState<LocalModelsProbeResponse | null>(null)
+  const [probing, setProbing] = useState(false)
+
   const setChatPresetIdx = (idx: number) => {
     setChatPresetIdxState(idx)
     localStorage.setItem(CHAT_PRESET_KEY, String(idx))
@@ -164,6 +169,39 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
     setSavedNote('cleared all')
   }
 
+  const probeLocalModels = async () => {
+    setProbing(true)
+    try {
+      const res = await fetch('/api/local-models/probe', { headers: authHeader() })
+      if (res.ok) {
+        const body = (await res.json()) as LocalModelsProbeResponse
+        setLocalProbe(body)
+      } else {
+        setLocalProbe({ models: [], hosts: [] })
+      }
+    } catch {
+      setLocalProbe({ models: [], hosts: [] })
+    } finally {
+      setProbing(false)
+    }
+  }
+
+  const useLocalModelForChat = (m: LocalModel) => {
+    setChatPresetIdx(0)
+    setChatModel(m.id)
+    setSavedNote(`chat → ${m.id}`)
+  }
+  const useLocalModelForAgent = (m: LocalModel) => {
+    setAgentPresetIdx(0)
+    setAgentModel(m.id)
+    setSavedNote(`agent → ${m.id}`)
+  }
+  const useLocalModelForEmbedding = (m: LocalModel) => {
+    setEmbedBaseUrl(`${m.baseUrl}/v1`)
+    setEmbedModel(m.id)
+    setSavedNote(`embedding → ${m.id}`)
+  }
+
   const saveEmbeddingProvider = () => {
     const cfg: ProviderConfig = { id: 'openai-compatible', model: embedModel, ...(embedBaseUrl ? { baseUrl: embedBaseUrl } : {}) }
     setEmbeddingProvider(cfg)
@@ -211,6 +249,44 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
             <div style={styles.providerLabel}>Inline FIM</div>
             <div style={styles.providerNote}>Configured via VSCode settings: <code>qbee.inlineCompletions.*</code> — provider, model, baseUrl, maxTokens. Open Settings (Ctrl+,) and search "qbee".</div>
           </div>
+
+          <div style={styles.localModelsBlock}>
+            <div style={styles.localModelsHeader}>
+              <span style={styles.localModelsTitle}>Local models on your machine</span>
+              <button style={styles.detectBtn} onClick={probeLocalModels} disabled={probing}>
+                {probing ? 'Probing…' : localProbe ? 'Re-detect' : 'Detect local models'}
+              </button>
+            </div>
+            {localProbe && (
+              <>
+                {localProbe.hosts.length > 0 && (
+                  <div style={styles.localModelsHostStrip}>
+                    {localProbe.hosts.map((h) => (
+                      <span key={h.source} style={{ ...styles.localModelsHostChip, opacity: h.ok ? 1 : 0.5 }}>
+                        {h.ok ? '●' : '○'} {labelForSource(h.source)} {h.ok ? `(${h.modelCount})` : `— ${h.error ?? 'not reachable'}`}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {localProbe.models.length === 0 && (
+                  <div style={styles.localModelsEmpty}>
+                    No local model hosts reachable. Start Ollama, LM Studio, or a llama.cpp server, then click Re-detect.
+                  </div>
+                )}
+                {localProbe.models.map((m, i) => (
+                  <div key={i} style={styles.localModelRow}>
+                    <span style={styles.localModelSourceTag}>{labelForSource(m.source)}</span>
+                    <span style={styles.localModelId} title={m.baseUrl}>{m.id}</span>
+                    {m.size && <span style={styles.localModelSize}>{m.size}</span>}
+                    <span style={styles.flex} />
+                    <button style={styles.smallBtn} onClick={() => useLocalModelForChat(m)} title="Use for chat">→ chat</button>
+                    <button style={styles.smallBtn} onClick={() => useLocalModelForAgent(m)} title="Use for agent">→ agent</button>
+                    <button style={styles.smallBtn} onClick={() => useLocalModelForEmbedding(m)} title="Use for embeddings (@codebase). Only meaningful for embedding models like nomic-embed-text.">→ embed</button>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
         </section>
 
         <section style={styles.section}>
@@ -256,6 +332,15 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   )
 }
 
+function labelForSource(source: string): string {
+  switch (source) {
+    case 'ollama': return 'Ollama'
+    case 'lm-studio': return 'LM Studio'
+    case 'llama-cpp': return 'llama.cpp'
+    default: return source
+  }
+}
+
 function readPresetIdx(key: string, fallback: number): number {
   const stored = Number(localStorage.getItem(key) ?? String(fallback))
   return Number.isFinite(stored) && stored >= 0 && stored < DEFAULT_PRESETS.length ? stored : fallback
@@ -285,6 +370,18 @@ const styles: Record<string, React.CSSProperties> = {
   providerSelect: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '4px 8px', borderRadius: 4, fontSize: 11 },
   providerModel: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '4px 8px', borderRadius: 4, fontSize: 11, fontFamily: 'monospace' },
   providerNote: { fontSize: 11, color: '#888', gridColumn: 'span 2' },
+  localModelsBlock: { marginTop: 8, padding: 8, background: '#1d2433', border: '1px solid #2a3548', borderRadius: 4, display: 'flex', flexDirection: 'column', gap: 6 },
+  localModelsHeader: { display: 'flex', alignItems: 'center', gap: 8 },
+  localModelsTitle: { fontSize: 12, fontWeight: 600, color: '#bcd', flex: 1 },
+  detectBtn: { background: '#3a6cd8', border: 'none', color: 'white', padding: '4px 10px', borderRadius: 3, fontSize: 11, cursor: 'pointer' },
+  localModelsHostStrip: { display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 10, color: '#7a90b0' },
+  localModelsHostChip: { padding: '2px 6px', background: '#2a3548', borderRadius: 3 },
+  localModelsEmpty: { fontSize: 11, color: '#888', padding: '4px 0' },
+  localModelRow: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0', borderTop: '1px dashed #2a3548', fontSize: 11 },
+  localModelSourceTag: { fontSize: 9, color: '#7a90b0', textTransform: 'uppercase', letterSpacing: 0.5, minWidth: 60 },
+  localModelId: { fontFamily: 'monospace', color: '#dde', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  localModelSize: { fontSize: 10, color: '#888' },
+  smallBtn: { background: 'transparent', border: '1px solid #444', color: '#aaa', padding: '2px 6px', borderRadius: 3, fontSize: 10, cursor: 'pointer' },
   row: { display: 'flex', flexDirection: 'column', gap: 4 },
   label: { fontSize: 11, color: '#aaa' },
   input: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '6px 8px', borderRadius: 4, fontSize: 12, fontFamily: 'monospace', width: '100%', boxSizing: 'border-box' },

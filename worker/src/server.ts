@@ -16,6 +16,7 @@ import { retrieve } from './rag/retriever.js'
 import { RagStore } from './rag/store.js'
 import { RagWatcher } from './rag/watcher.js'
 import { formatEditorContext } from './editorContext.js'
+import { probeLocalModels } from './localModelsProbe.js'
 
 const REQUESTED_PORT = Number(process.env.QBEE_WORKER_PORT ?? 8421)
 const AUTH = process.env.QBEE_WORKER_AUTH ?? 'dev'
@@ -125,6 +126,12 @@ app.delete('/api/secrets/:key', async (req, reply) => {
 })
 
 app.get('/api/secrets', async () => ({ keys: Array.from(secrets.keys()) }))
+
+// Probe loopback for running local-model hosts (Ollama / LM Studio /
+// llama.cpp). Used by the dashboard's "Detect local models" button.
+app.get('/api/local-models/probe', async () => {
+  return await probeLocalModels()
+})
 
 app.post('/api/chat', async (req, reply) => {
   const parsed = ChatRequest.safeParse(req.body)

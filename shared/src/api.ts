@@ -175,6 +175,42 @@ export const EmbedResponse = z.object({
 })
 export type EmbedResponse = z.infer<typeof EmbedResponse>
 
+// ─────────────────────────── Local model probe ──────────────────
+//
+// Probes common local LLM hosts (Ollama, LM Studio, llama.cpp server) on
+// loopback so the dashboard can offer "pick a model" instead of "type a
+// model name". Results are best-effort; an unreachable host just contributes
+// no entries.
+
+export const LocalModelSource = z.enum(['ollama', 'lm-studio', 'llama-cpp'])
+export type LocalModelSource = z.infer<typeof LocalModelSource>
+
+export const LocalModel = z.object({
+  source: LocalModelSource,
+  baseUrl: z.string(),
+  // The model id the user types into the chat 'model' field. For Ollama this
+  // includes the tag suffix ("qwen2.5-coder:7b"); for OpenAI-shaped servers
+  // it's the id field on /v1/models.
+  id: z.string(),
+  // Optional human-readable size label ("4.4 GB"); only Ollama exposes this.
+  size: z.string().optional(),
+})
+export type LocalModel = z.infer<typeof LocalModel>
+
+export const LocalModelsProbeResponse = z.object({
+  models: z.array(LocalModel),
+  // Per-host status so the dashboard can say "Ollama not reachable at
+  // 127.0.0.1:11434" instead of silently dropping it.
+  hosts: z.array(z.object({
+    source: LocalModelSource,
+    baseUrl: z.string(),
+    ok: z.boolean(),
+    error: z.string().optional(),
+    modelCount: z.number().int().nonnegative(),
+  })),
+})
+export type LocalModelsProbeResponse = z.infer<typeof LocalModelsProbeResponse>
+
 // ─────────────────────────── RAG ─────────────────────────────────
 
 export const RagIndexRequest = z.object({
