@@ -1,0 +1,45 @@
+name: ci
+
+# Runs on every push to main and on every PR. Fast — just typecheck + tests.
+# The release workflow handles the heavy build path on tag.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        # Don't pull editor submodule — tests cover spa/worker/shared only and
+        # the submodule is ~150 MB. Save the time.
+        with:
+          submodules: false
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.1'
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Cache pnpm store
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-ci-${{ hashFiles('**/pnpm-lock.yaml') }}
+
+      - name: Install workspace deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck (workspace-wide)
+        run: pnpm -w typecheck
+
+      - name: Test
+        run: pnpm -w test
