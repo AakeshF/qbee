@@ -41,6 +41,18 @@ if [ ! -d node_modules ]; then
   npm install --legacy-peer-deps
 fi
 
+# Swap in the QBee macOS icon so gulp picks it up when staging the .app bundle.
+# Save the upstream code.icns so the working tree restores cleanly after.
+ICON_SRC="$ROOT/scripts/branding/qbee.icns"
+ICON_DEST="$ROOT/editor/resources/darwin/code.icns"
+ICON_BACKUP=""
+if [ -f "$ICON_SRC" ]; then
+  ICON_BACKUP="$(mktemp -t qbee-code-icns-backup-XXXXXX.icns)"
+  cp "$ICON_DEST" "$ICON_BACKUP"
+  cp "$ICON_SRC" "$ICON_DEST"
+  trap 'cp "$ICON_BACKUP" "$ICON_DEST" 2>/dev/null; rm -f "$ICON_BACKUP"' EXIT
+fi
+
 # Pre-strip cross-platform binaries from the editor tree before gulp runs.
 # Same logic as build-windows.sh.
 echo "    pre-stripping non-host binaries from editor tree"

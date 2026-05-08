@@ -37,6 +37,18 @@ if [ ! -d node_modules ]; then
   npm install --legacy-peer-deps
 fi
 
+# Swap in the QBee Windows icon for gulp + rcedit to embed into QBee.exe.
+# Save the upstream code.ico first so the working tree restores cleanly after.
+ICON_SRC="$ROOT/scripts/branding/qbee.ico"
+ICON_DEST="$ROOT/editor/resources/win32/code.ico"
+ICON_BACKUP=""
+if [ -f "$ICON_SRC" ]; then
+  ICON_BACKUP="$(mktemp -t qbee-code-ico-backup-XXXXXX.ico)"
+  cp "$ICON_DEST" "$ICON_BACKUP"
+  cp "$ICON_SRC" "$ICON_DEST"
+  trap 'cp "$ICON_BACKUP" "$ICON_DEST" 2>/dev/null; rm -f "$ICON_BACKUP"' EXIT
+fi
+
 # Pre-strip cross-platform binaries from the editor tree BEFORE gulp runs.
 # rcedit.exe (upstream's metadata patcher) tries to load every .node/.exe/.dll
 # in the output to set Windows version info — and chokes on Mach-O / non-host
