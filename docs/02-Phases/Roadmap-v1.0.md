@@ -1,159 +1,207 @@
 # Roadmap to v1.0
 
-> **Where we are: v0.2.1.** Branded VSCode fork with chat, agent (with diff approval), inline FIM completions, hybrid RAG (with `@codebase`), incremental reindex, in-app updater, and a tag-driven AppImage release pipeline. Linux x64 + arm64 AppImages publish on every release tag.
+> **Where we are: v0.4.4.** Cross-platform releases shipping for Linux (x64 + arm64 AppImages), Windows (x64 portable zip with Go launcher), and macOS (Apple Silicon .dmg + .zip). In-app Settings tab for API keys (no env vars). Provider preset + model selection persisted to localStorage. Inline FIM, agent ReAct loop with diff-only writes, hybrid `@codebase` RAG, in-app updater, tag-driven CI release pipeline.
 
-This document plans the path from v0.2.1 → v1.0. Each milestone is a coherent feature bundle with a demo and ship criteria, in the spirit of the original phase docs (Phase-0 through Phase-7).
-
-The framing question for v1.0: **"Could I hand this AppImage to a stranger on Reddit and have them get value out of it without me on call?"** Each milestone closes a specific gap between today and that bar.
+This document plans the path from v0.4.4 → v1.0 and beyond.
 
 ---
 
-## v0.3 — Feature parity with Cursor's basics
+## The framing question
 
-**Theme:** the things any AI editor user expects on first install.
+> **"Could I hand this download link to a stranger on Reddit and have them get value out of it without me on call?"**
 
-| Item | Notes |
-|---|---|
-| **Tree-sitter chunking** for RAG | Replaces the fixed-window chunker. Function/class granularity per language; fallback to fixed-window for unsupported langs. The single biggest RAG quality win on the board. |
-| **`@file:path` mention** in chat | Sibling of `@codebase` — direct file injection (read via worker FS) without going through retrieval. |
-| **Multi-turn agent conversations** | Today the agent panel sends one user turn per run. Add a continuation path so the user can refine the agent's output without restarting. |
-| **Checkpoint snapshots / undo** | Before each agent run, snapshot the workspace under `.qbee/checkpoints/<timestamp>/` (hardlinks where possible). "Undo to checkpoint" command in the editor. |
-| **Workspace root from editor** | The SPA hardcodes the dev path today. Pass via the URL fragment that the editor sets when mounting the webview. |
-| **Settings UI for API keys** | Replace "set ANTHROPIC_API_KEY in worker env" with a prompt-on-first-use that writes to `SecretStorage`. The worker reads via an editor RPC channel. |
+Each milestone closes a specific gap between today and that bar.
 
-**Demo:** new install → first launch → SPA prompts for an Anthropic key → user pastes → asks "rename `foo` to `bar` everywhere and update tests" → multi-file diff appears → user approves → tests run, regression detected → user says "agent: also update the README" → agent picks up where it left off.
-
-**Ship criteria:**
-- Tree-sitter packs install per-platform without manual rebuilds (Electron 39.x ABI matched)
-- `@file:` autocompletes file paths
-- Agent state survives between turns within a session
-- `qbee: undo last agent run` reverses every approved write
-- Settings page persists keys via SecretStorage; no env-var dependency for first-run
+But there's a sharper version of the question, asked of the project as a whole:
 
 ---
 
-## v0.4 — Polish and trust
+## "Is this just VSCode?" — the differentiation thesis
 
-**Theme:** stops feeling like a dev preview.
+**Today, mostly yes.** ~99% of the lines in `editor/` are upstream VSCode. The QBee-specific code is a chat panel, an agent ReAct loop, an inline FIM hook, and a hybrid retriever. All of those could plausibly exist as a VSCode extension (Continue.dev, Cline, Aider-ish setups already do most of it). The arguments for the fork right now are mostly cosmetic: branded chrome, telemetry off, Open VSX marketplace, "feels native instead of installed".
 
-| Item | Notes |
-|---|---|
-| **`run_terminal` agent tool** with per-command approval | Today the agent can read/grep/write but not execute. Add the tool with a confirmation modal in the SPA: command displayed, user approves once, output streams back. |
-| **Real artwork** | Replace the placeholder blue Q at `scripts/appimage/qbee.png`. AppImage icon, .desktop entry icon, in-app brand mark. (User generates via Gemini.) |
-| **Markdown UX in chat** | Code-block copy button, line numbers in fenced blocks, inline math rendering, mermaid diagrams (optional). |
-| **Provider config persistence** | Today switching presets resets the conversation. Persist per-conversation provider + model + API key ref via VSCode settings. |
-| **GPG signing live** | Generate a key, store the private half as `GPG_PRIVATE_KEY` repo secret. The CI signing step is already wired and dormant. Once active, every release ships `.asc` signatures alongside the AppImages. Document `gpg --verify` in the install steps. |
-| **First-run experience** | Welcome panel inside the QBee sidebar: "Pick your provider", "Set API key", "Try `@codebase how is this code organized?`". Drives the user through the three things they need to know. |
-| **Better error surfaces** | Today errors render as `_error: <message>_` inline. Replace with toasts + retry buttons + a "show details" expandable for stack traces. |
+That's a real but narrow value prop. **A fork that doesn't earn its differentiation eventually loses to "stock VSCode + one of these extensions"** — and we should be honest about that.
 
-**Demo:** clean Linux box, never used QBee. Download AppImage from a GPG-verified release. Launch. Welcome panel walks the user through first chat. Agent asks for terminal-tool approval the first time it wants to run `npm test`; user approves; output streams.
+The plan from v0.5 onward earns the fork by shipping things you genuinely can't do (or can't do well) as a sidebar extension:
 
-**Ship criteria:**
-- AppImage download → `gpg --verify` succeeds → launches → first-run flow works without prior knowledge
-- Terminal-tool approval is per-command; "always allow this command" remembered per workspace
-- A chat with three code blocks, you can copy each independently
+| Differentiator | Lands in | Why a fork |
+|---|---|---|
+| **Embedded local LLM** — bundle llama.cpp + a small FIM model in the AppImage so first launch works zero-config | **v0.6** | Extensions can't ship a native runtime that survives uninstall/upgrade cleanly; the AppImage / .app / .exe is the boundary that lets us ship one binary that works |
+| **Native AI chrome** — Cmd+K inline edit with diff-as-ghost-text, multi-line completion, predictive next-cursor jumps | **v0.7** | Inline-edit and predictive-jump UX touches the editor's command/cursor layer below what extension API exposes; this is the single feature people associate with Cursor |
+| **Agent worktrees + domain tools** — every agent task in a git worktree, parallel runs, review-before-merge; agent has real tools (test runner, debugger, terminal-aware) | **v0.8** | Worktree management + debugger/test integration needs hooks deeper than the extension surface; this is what makes the agent useful for real work, not just file edits |
+
+Everything else in this roadmap is in service of these landing well: reliability so users trust the agent; signed builds so the AppImage isn't quarantined; distribution breadth so people can install the thing.
+
+**Things that go beyond what one fork should do** become **side projects under the QBee umbrella** (see the bottom of this doc). The fine-tuning loop, the benchmark harness, the MCP host — those each deserve their own repo and lifecycle, not a checkbox in the editor's roadmap.
 
 ---
 
-## v0.5 — Reliability
+## What's already shipped (v0.3–v0.4)
 
-**Theme:** doesn't break in surprising ways.
+Marked done so the milestones below stay focused on what's actually pending.
+
+| Item | Shipped in | Notes |
+|---|---|---|
+| Workspace root from editor URL fragment | v0.3 | SPA receives `workspaceRoot` via fragment from the editor when mounting the webview |
+| Settings UI for API keys (`Settings.tsx`) | v0.3 | Three known providers + custom OpenAI-compatible. Persists to localStorage; pushes to worker `/api/secrets/set` on load. (Editor SecretStorage migration deferred — see debt list.) |
+| Provider preset + model persistence | v0.4 | `qbee.presetIdx.v1` + `qbee.model.v1` in localStorage; survives between sessions |
+| Embedding endpoint config in Settings | v0.3 | OpenAI-compatible base URL + model fields |
+| `@file:path` mention in chat | v0.3 | Direct file injection, no retrieval round-trip |
+| Multi-turn agent conversations | v0.3 | Continuation path inside a single agent panel session |
+| Cross-platform builds (was v0.6) | v0.4 | Linux x64+arm64 AppImage, Windows x64 portable zip with Go launcher, macOS Apple Silicon .app bundle (.dmg + .zip). macOS Intel deferred — GitHub free Intel runner is queue-starved and best-effort in CI. |
+| Go launcher (`scripts/launcher/`) | v0.4 | Cross-platform single binary; resolves the editor + worker layout per-platform; no console flash on Windows (`-H=windowsgui`); Info.plist `CFBundleExecutable` swap on macOS |
+
+**Still pending from old v0.3 / v0.4:**
+
+- **Tree-sitter chunking** for RAG (function/class granularity per language) — biggest single RAG quality win on the board, hasn't landed yet
+- **Checkpoint snapshots / undo** before each agent run (`.qbee/checkpoints/<timestamp>/` hardlinks, `qbee: undo last agent run`)
+- **`run_terminal` agent tool** with per-command approval modal
+- **Real artwork** — the Q-on-blue placeholder is still in `scripts/appimage/qbee.png` (and now in the macOS / Windows packaging too)
+- **Markdown UX in chat** — code-block copy buttons, line numbers in fenced blocks, optional mermaid
+- **GPG signing live** — CI step is wired and dormant; needs `GPG_PRIVATE_KEY` repo secret
+- **First-run welcome panel** inside the QBee sidebar
+- **Better error surfaces** — toasts + retry + "show details" instead of inline `_error: ..._`
+
+These all fold into **v0.5** below as the cleanup pass before the differentiation arc starts.
+
+---
+
+## v0.5 — Reliability and the v0.4 cleanup pass
+
+**Theme:** stops feeling like a dev preview. Everything we promised in v0.3/v0.4 but didn't quite finish, plus the reliability fundamentals.
 
 | Item | Notes |
 |---|---|
-| **Worker auto-restart on crash** | Today AppRun spawns the worker once and lets it die with the editor. Add a supervisor (in `contrib/qbee/electron-main/` via utility-process IPC, or a shell-side wrapper in AppRun) that restarts the worker up to N times in M seconds. |
-| **Index health / status surface** | "Indexing 45% complete (2,300/5,100 files)" in the QBee status bar. Surface stuck-indexing, embedding-endpoint-down, dim-mismatch errors in the UI instead of silently failing. |
-| **AppImage in-place updater** | Today's "Check for Updates" links to the release page. Promote to: download → atomic replace → restart. AppImage spec supports this via the standard updater binary; need to wire it. |
-| **Test suite** | The codebase has zero tests outside the editor's existing harness. Add `vitest` coverage for: provider adapters (mocked), agent tool implementations, RAG store + retriever. CI gate. |
-| **Telemetry hook (opt-in, local-only)** | Completion accept rate, request latency, error frequency. **Local logging only by default**, no upload. Optional opt-in to send anonymized aggregates somewhere we control. |
+| **Tree-sitter chunking** | Replaces the fixed-window chunker. Function/class granularity per language; fallback to fixed-window for unsupported langs. Index format change → migration path needed before v1.0 stability commitments. |
+| **Checkpoint snapshots / undo** | Snapshot workspace under `.qbee/checkpoints/<timestamp>/` (hardlinks where possible) before each agent run. `qbee: undo last agent run` reverses every approved write. |
+| **`run_terminal` agent tool with per-command approval** | Confirmation modal in SPA: command displayed, user approves, output streams. "Always allow this command in this workspace" remembered. |
+| **Worker auto-restart on crash** | Supervisor in `contrib/qbee/electron-main/` (utility-process IPC) restarts worker up to N times in M seconds. AppRun / launcher today spawns once and lets it die. |
+| **Index health surface** | "Indexing 45% complete (2,300/5,100 files)" in QBee status bar. Surface stuck-indexing, embedding-endpoint-down, dim-mismatch errors in the UI instead of silently failing. |
+| **AppImage in-place updater** | Promote "Check for Updates" from "links to release page" to "download → atomic replace → restart". AppImage spec supports this; Windows zip + macOS .app updaters are stretch (more design work). |
+| **GPG signing live** | Set `GPG_PRIVATE_KEY` repo secret. Every release ships `.asc` signatures alongside binaries. Document `gpg --verify` in install steps. |
+| **First-run welcome panel** | In-sidebar walkthrough: "Pick your provider", "Set API key", "Try `@codebase how is this code organized?`". |
+| **Better error surfaces** | Toasts + retry buttons + "show details" expandable for stack traces. |
+| **Markdown UX polish** | Code-block copy button, line numbers in fenced blocks, inline math, optional mermaid. |
+| **Real artwork** | Replace Q-on-blue placeholder. AppImage icon, .desktop entry, in-app brand mark, macOS .icns, Windows .ico. |
+| **Test suite + CI gate** | `vitest` coverage for provider adapters (mocked), agent tool implementations, RAG store + retriever. CI gate. Today's coverage outside the editor's existing harness is zero. |
 
-**Demo:** kill `pkill -9 -f qbee-worker` while a chat is mid-stream. Editor reconnects within 2s. Notification: "worker restarted". User retries; works.
+**Demo:** clean Linux box, never used QBee. Download a GPG-verified AppImage. Launch. Welcome panel walks through provider setup. Agent runs `npm test`, hits an approval gate, runs, recovers from a forced `pkill -9 -f qbee-worker` mid-task.
 
 **Ship criteria:**
 - Worker crash recovery: 3 forced kills in 10s, all auto-recover
 - 70%+ test coverage on provider adapters and RAG retriever
-- A "Send Diagnostic" command that bundles logs + last 5 errors into a clipboard-pastable report
+- AppImage download → `gpg --verify` succeeds → launches → first-run flow works without prior knowledge
+- A "Send Diagnostic" command bundles logs + last 5 errors into a clipboard-pastable report
+- Agent runs with approval modal; "always allow" remembered per workspace
 
 ---
 
-## v0.6 — Distribution breadth
+## v0.6 — Embedded local LLM (the "click and go" win)
 
-**Theme:** more places to install from.
+**Theme:** zero-config local inference. **The biggest "is this just VSCode?" answer we can ship in one milestone.**
 
-| Item | Notes |
-|---|---|
-| **AUR `PKGBUILD`** | First package for the AppImage release. CachyOS / Arch users do `yay -S qbee-bin` or similar. Builds against the AppImage release — small `PKGBUILD` checked into the repo, published manually until v1.0 when we automate. |
-| **macOS build target** | `.dmg` via `electron-builder` or hand-rolled. Universal binary preferred (single artifact, x64 + arm64). Adds a darwin job to the release matrix. |
-| **Flatpak** | Sandbox makes local-LLM access tricky (worker child process, network to localhost). Decide between (a) full sandbox with a Flatpak portal for net access, (b) `--filesystem=home` permission, (c) defer past v1.0. |
-| **Auto-update channel selection** | "stable" / "beta" / "main" channels in the updater settings. CI publishes pre-releases tagged `v0.x.y-beta.N`. |
-| **Windows build** | Lowest priority — most local-LLM stacks (Ollama, llama.cpp) work on Windows but the integration story is messier. Defer if time-constrained. |
-
-**Demo:** Three installs running side-by-side: AppImage on Linux, `.dmg` on a Mac, AUR package on Arch. Same workspace, same conversation, same model. They behave identically.
-
-**Ship criteria:**
-- macOS build green in CI; signed if Apple Dev account is provisioned, ad-hoc otherwise
-- AUR package installs and launches QBee 1:1 with the AppImage
-- Updater respects channel setting
-
----
-
-## v0.7 — Performance
-
-**Theme:** feels fast enough that the model is the bottleneck, not us.
+This was originally v0.8 in the old plan; promoted because it's the single largest UX win and the most defensible fork-justifying differentiator. After v0.6 lands, "download QBee → click → tab completion already works, no Ollama install" is true.
 
 | Item | Notes |
 |---|---|
-| **Cross-encoder reranking** | After hybrid retrieval, re-rank top-20 with a small cross-encoder (e.g. `bge-reranker-base`). Big quality win on `@codebase` queries with multiple matches. |
-| **Cache agent tool results** | `read_file` and `list_dir` results don't need to round-trip on every tool call within a turn. Memoize against the file's mtime. |
-| **SPA bundle optimization** | Today's chat bundle is ~156KB (50KB gzipped). Adding markdown + highlight bumped it; optimize tree-shaking, lazy-load `rehype-highlight`. Target <100KB gzipped. |
-| **FIM cache hit rate visibility** | Surface inline-completion cache hit rate in a status bar item; lets users tell when their model is too slow vs when caching is masking it. |
-| **Embedding batch size auto-tune** | Today fixed at 32. Detect endpoint type (Ollama / LM Studio / vLLM); tune the batch size to maximize throughput for each. |
-
-**Demo:** index a 10k-file repo. p50 query latency under 500ms. Inline completions feel Cursor-class on local Qwen2.5-Coder-1.5B (sub-150ms ghost text on a typical laptop CPU).
-
-**Ship criteria:**
-- p50 RAG search < 500ms on a 10k-file workspace
-- p50 FIM completion < 200ms on Qwen2.5-Coder-1.5B GGUF locally
-- Reranker quality A/B: rerank-on vs rerank-off, ≥10% improvement on a 50-query benchmark
-
----
-
-## v0.8 — Optional embedded local LLM
-
-**Theme:** zero-config local inference.
-
-The killer convenience win: `node-llama-cpp` bundled into the worker. User downloads the AppImage, picks a default model on first run, gets inline completions + chat without installing Ollama or LM Studio.
-
-| Item | Notes |
-|---|---|
-| **`LocalLlamaProvider`** | New entry in `worker/src/providers/`. Same interface as the others. Loads a GGUF model via `node-llama-cpp`. |
-| **Model picker UI** | Dropdown in settings: "download Qwen2.5-Coder-1.5B (1.0 GB)" / "Qwen2.5-Coder-7B (4.4 GB)" / "browse a local file". Caches under `~/.qbee/models/`. |
+| **`LocalLlamaProvider`** | New entry in `worker/src/providers/`. Same `Provider` interface as the others. Loads a GGUF model via `node-llama-cpp`. |
+| **Bundled FIM model** | Ship a small FIM model with the binary — leading candidate `Qwen2.5-Coder-1.5B-Instruct` GGUF (~1 GB Q4). Adds bulk to the download but eliminates the biggest first-run gate. Document the size cost openly. |
+| **Optional larger model picker** | Settings dropdown: "Qwen2.5-Coder-1.5B (bundled)" / "Qwen2.5-Coder-7B (4.4 GB, click to download)" / "browse a local file". Caches under `~/.qbee/models/`. |
 | **GPU detection** | Probe for CUDA / Metal / Vulkan; auto-enable acceleration when available, fall back to CPU. |
-| **Bundle size impact** | `node-llama-cpp` adds ~30 MB to the worker bundle. Acceptable; the alternative (running a separate Ollama install) is worse for a "just works" story. |
+| **Embedded embedding model** | Bundle `nomic-embed-text` GGUF too so `@codebase` works without Ollama. ~250 MB additional. |
+| **Bundle size accounting** | `node-llama-cpp` (~30 MB) + bundled FIM (~1 GB) + bundled embedding (~250 MB) ≈ +1.3 GB to the AppImage / zip. The honest tradeoff: 1.3 GB of disk for a binary that genuinely works on first launch vs. a 300 MB binary that requires the user to install + configure Ollama. We pay the bytes. |
+| **First-run model load progress** | Visible streaming progress in the welcome panel. First inference call shouldn't be silent — typing into a file with no feedback for 8 seconds while the model warms is worse than a clear "loading model…" UI. |
+| **Smaller "lite" variant** | Stretch: ship a `qbee-lite` artifact without the bundled model for users who already have Ollama / LM Studio and want a smaller download. CI matrix dimension. |
 
-**Demo:** new user, no LLM stack. Download AppImage. Launch. Pick "Qwen2.5-Coder-1.5B" from the model picker. Wait 60s for model download. Type into a Python file → ghost text streams.
+**Demo:** new user, no LLM stack installed. Download AppImage. Launch. Open a Python file. Type. Ghost-text appears within 3 seconds of first keystroke (cold-load). No setup screen, no env vars, no `ollama pull`.
 
 **Ship criteria:**
-- Cold start to first FIM completion under 90s on a typical laptop (download + model load)
-- Inference parity with the Ollama path: same completions for the same prompts within tolerance
+- Cold start to first FIM completion under 10s on a typical laptop (model already on disk from install)
+- Inference parity with Ollama path: same completions for the same prompts within tolerance
+- p50 FIM completion under 200ms on Qwen2.5-Coder-1.5B GGUF on a typical laptop CPU
+- Bundle size increase documented prominently in the release notes
+
+**Why this before v0.7 inline AI chrome:** the chrome features need a fast model to feel right. Cmd+K inline edit feels broken if the user has to set up a provider first. Local-by-default unblocks the chrome work.
 
 ---
 
-## v0.9 — User-facing docs and onboarding polish
+## v0.7 — Native AI chrome (Cursor-class inline UX)
 
-**Theme:** someone with no context can self-serve.
+**Theme:** the editor *feels* AI-native, not "VSCode with a chat sidebar."
+
+This is the milestone where someone who's used Cursor would say "OK, this is doing the thing Cursor does." Not parity — better in some places (BYOM, local, open source), worse in others (no team features, no proprietary models). But the shape is there.
 
 | Item | Notes |
 |---|---|
-| **User guide** | Replace today's dev-facing docs with a `docs/Users/` tree: install / first chat / agent walkthrough / RAG walkthrough / troubleshooting. |
-| **Video walkthrough** | 2-3 min screen recording for the README. AI editors are easier to demo than describe. |
-| **Provider-specific guides** | One page per provider: Anthropic (key, prompt caching benefits), Gemini (key, model picks), Ollama (install, recommended models), LM Studio (setup), llama.cpp server (manual). |
-| **Issue templates** | Three GitHub issue templates: bug, feature request, "my model is slow". Last one routes users to a self-diagnostic checklist. |
-| **Discord / Matrix / GitHub Discussions** | Pick one, link from README. Honestly the lowest-leverage item — mostly useful when users actually exist. |
+| **Cmd+K inline edit** | Select code, hit Cmd+K, type natural-language instruction, see the edit as ghost text inline (not in the sidebar). Tab to accept; Esc to reject. The single feature most people identify as "Cursor". |
+| **Multi-line ghost-text completion** | Beyond single-line FIM. The model proposes a multi-line edit, ghost-text spans the affected range, Tab accepts the whole block, individual-line accept/reject via keybinding. |
+| **Predictive next-cursor jumps** ("Cursor Tab") | After an edit, the model predicts the most likely next location to edit and offers a single-Tab jump. Kept on its own per-keystroke budget separate from completions. |
+| **Inline diff for refactor flows** | When the agent or Cmd+K produces a multi-file edit, render diff as inline ghost text in each affected file simultaneously. User reviews each file inline; one keystroke accepts all or accepts current. |
+| **Selection-aware chat** | Right-click / shortcut → "Ask QBee about this selection" — chat opens, prompt prefilled with the selection as context. Easier to reach for than typing `@file:` mentions. |
+| **Diff hunks in chat replies** | When chat returns code in a fenced block, render an "Apply this diff" button that surfaces the WorkspaceEdit preview, same machinery as the agent's diff flow. |
+
+**Demo:** open a 200-line file. Highlight a function, Cmd+K → "convert to async". Ghost-text diff appears in place. Tab. Cursor jumps to a related function in the same file (predicted next edit). Ghost-text diff appears there too. Tab. Done.
 
 **Ship criteria:**
-- A non-developer can read the README, install QBee, and do their first chat in under 10 minutes
-- All provider walkthrough videos load and play
+- Cmd+K from selection to first ghost-text edit under 1.5s on the bundled local model
+- Tab-to-accept and Esc-to-reject keybindings stable, not stomped by stock VSCode bindings (this is mostly a binding-conflict audit)
+- Predictive jump accept rate >25% on a benchmark of 50 typical edit sequences
+- All inline UX works equally with cloud providers (Anthropic / Gemini) and the bundled local model — the chrome is provider-agnostic
+
+**This is the milestone that earns the fork.** If we ship v0.6 and v0.7, the answer to "is this just VSCode?" is no — Cmd+K and predictive jumps are not extension-territory in any practical sense. Stock VSCode + Continue can't deliver this UX.
+
+---
+
+## v0.8 — Agent worktrees + domain tools
+
+**Theme:** the agent does real work, in isolation, with real tools.
+
+The agent in v0.4 has `read_file / list_dir / grep / write_file`. That's a fine demo, not a real coding workflow. v0.8 turns the agent from a demo into something you'd actually trust with a 30-minute task.
+
+| Item | Notes |
+|---|---|
+| **Git worktree per agent task** | When the user kicks off an agent run, spawn a worktree at `.qbee/worktrees/<task-id>/`. Agent's writes land there. User reviews via diff UI before the worktree merges into the main checkout. Inspired by Aider's branch flow + Devin/Codex's PR flow. |
+| **Parallel agent runs** | Multiple worktrees → multiple agent tasks in flight. "Try three approaches to this refactor in parallel, I'll pick the best one." Each task has its own provider/model selection. |
+| **Review-before-merge UI** | Worktree completion surfaces a side-by-side diff view; user accepts whole task, accepts individual files, or rejects. Rejected worktrees stay around for inspection until cleaned up. |
+| **`run_test` tool** | Agent can run the project's test suite (detected via `package.json scripts.test`, `pytest.ini`, `cargo.toml`, etc.) and stream output. "Make this test pass" is a viable agent prompt. |
+| **`debug_step` tool** | Agent can drive the editor's debugger: set breakpoint, run-to-line, inspect locals, step over. Lets it find runtime bugs, not just static ones. Editor-side hooks needed. |
+| **`run_terminal_aware` upgrade** | The v0.5 `run_terminal` tool gets better context: pipes stdout AND stderr back, captures exit code, surfaces them to the model in the next turn. "Build broke" → agent reads the error and fixes it. |
+| **`pkg_install` tool** | Agent can suggest package additions when it finds an undefined symbol. User approves the install. Removes a tedious manual loop. |
+| **Plan tree before execution** | Long-running agent tasks generate an explicit plan (tree of subtasks) before doing any work. User can edit the plan before the agent starts. Inspired by Claude Code's TodoWrite-style planning. |
+
+**Demo:** "agent: add JWT auth to the Express server, including tests." Plan tree appears: install jsonwebtoken, scaffold middleware, add tests, update README. User approves plan. Three worktrees spawn (different middleware approaches). Each runs in parallel. Tests run in each worktree. The one with passing tests gets surfaced first; others remain available. User reviews diffs side-by-side, picks one, merges.
+
+**Ship criteria:**
+- Agent task isolation: a failed agent run never modifies the user's working tree
+- Plan tree edit-before-run flow works end-to-end
+- Test runner integration green for at least Node, Python, and Rust projects
+- Parallel agent runs share index but isolate writes; no data races on the SQLite store
+- "Cancel and discard" cleans up worktree completely (no orphan branches)
+
+---
+
+## v0.9 — Distribution breadth + signed releases
+
+**Theme:** more places to install from, with trust signals.
+
+| Item | Notes |
+|---|---|
+| **macOS Intel build** | Currently best-effort in CI (free runner queue-starved). Either commit to a paid runner, switch to a self-hosted macOS Intel runner, or formally drop x86_64 macOS support and document it. |
+| **AUR `PKGBUILD`** | Wrap the AppImage release. CachyOS / Arch users do `yay -S qbee-bin`. Builds against the latest release tag. |
+| **Code-signed Windows builds** | EV cert is expensive (~$300-400/yr). Decide: commit to it, accept SmartScreen warnings, or hope for OV cert availability. SmartScreen warning is genuinely a friction point. |
+| **Notarized macOS builds** | Apple Developer Program ($99/yr). Required for Gatekeeper to not warn on first launch. |
+| **Auto-update channel selection** | "stable" / "beta" / "main" channels in the updater settings. CI publishes pre-releases tagged `v0.x.y-beta.N`. |
+| **Flatpak (decision point)** | Local-LLM access through the sandbox is tricky. Three options: (a) full sandbox + Flatpak portal for net access, (b) `--filesystem=home` + `--share=network` permissions, (c) defer past v1.0. Currently leaning (c). |
+| **`.deb` and `.rpm`** | Direct package manager installs for Ubuntu/Fedora/etc. Lower priority than AUR if AppImage covers most Linux users. |
+
+**Demo:** five installs side-by-side: AppImage on CachyOS, AUR package on Arch, .dmg on Apple Silicon, signed .exe installer on Windows, .deb on Ubuntu. Same workspace, same provider, same conversation. They behave identically.
+
+**Ship criteria:**
+- macOS Intel: either green in every CI run or formally dropped from supported platforms
+- AUR package installs and launches QBee 1:1 with the AppImage
+- Signed Windows installer doesn't trip SmartScreen
+- Notarized macOS .app launches without right-click → Open prompt
+- Updater respects channel setting
 
 ---
 
@@ -161,61 +209,108 @@ The killer convenience win: `node-llama-cpp` bundled into the worker. User downl
 
 **Theme:** stable, supported, recommended.
 
-By the time we cut v1.0, the feature set is locked. Subsequent releases are bug fixes and small additions, not new fundamental capabilities. v1.0 is a *commitment* to the API surface, the storage format, and the keybinding/command palette layout.
+By v1.0 the feature set is locked. Subsequent releases are bug fixes and small additions, not new fundamental capabilities. v1.0 is a *commitment* to the API surface, the storage format, and the keybinding/command palette layout.
 
 **Stability commitments:**
 - `qbee.*` configuration keys: stable. Changes go through a deprecation window.
 - `.qbee/index.sqlite` schema: stable. Migration path for any future change.
 - `/api/*` HTTP shapes: stable for any third-party tool that wants to drive the worker.
 - Editor commands: stable IDs (`qbee.checkForUpdates`, etc.) so user keybindings don't break.
+- Worktree storage layout under `.qbee/worktrees/`: stable.
+- Bundled-model API contract: any future model bundle change keeps the same `LocalLlamaProvider` shape.
+
+**User-facing docs and onboarding (was old v0.9):**
+- User guide tree: install / first chat / Cmd+K walkthrough / agent walkthrough / RAG walkthrough / troubleshooting
+- 2-3 minute video walkthrough in README
+- Provider-specific guides (one per Anthropic / Gemini / OpenAI-compat / local)
+- Issue templates (bug / feature request / "my model is slow")
+- A community channel (Discord or Matrix or GH Discussions, pick one)
 
 **Quality bar:**
 - Every milestone above shipped and stable
 - p95 reliability: no random crashes for a week of daily use
-- Real artwork, not placeholder
-- Signed AppImages on every release
-- All three providers (Anthropic, Gemini, OpenAI-compat) tested green in CI on each release tag
+- Real artwork everywhere (no Q-on-blue placeholders anywhere)
+- Signed binaries on every release for every platform
+- All providers (Anthropic, Gemini, OpenAI-compat, bundled local) tested green in CI on each release tag
+- A non-developer can read the README, install QBee, and do their first chat in under 10 minutes
 
 **What v1.0 is NOT:**
-- Not a stopping point — Phase 7+ from the original plan (MCP host, Flatpak, advanced multi-agent flows) lands post-1.0.
-- Not "done" — it's "trustworthy enough to recommend".
+- Not a stopping point — v1.x and the side projects below continue indefinitely
+- Not "done" — it's "trustworthy enough to recommend"
 
 ---
 
-## Honest current-state assessment
+## Side projects under the QBee umbrella
 
-**What works today (v0.2.1):**
-- Three providers stream chat cleanly: Anthropic (with prompt caching), Gemini, OpenAI-compatible (covers Ollama / LM Studio / llama.cpp / vLLM / OpenAI / OpenRouter).
-- Inline FIM completions with debounce + LRU cache + per-language allow-list.
-- Agent ReAct loop with read/list/grep/write tools; diffs render in the SPA; Apply button writes via `IBulkEditService` through a postMessage bridge.
-- Hybrid RAG (vector + BM25 + RRF). `@codebase` mention prepends top-K chunks. Incremental reindex on file change.
-- Self-contained AppImage: editor + bundled SPA + bundled worker + native deps. No external services required at install time (just the user's own LLM endpoint or API keys).
-- Tag-driven CI release: x64 + arm64 AppImages with SHA-256 checksums. GPG signing wired but dormant pending key.
+Things that are interesting, valuable, but **don't belong inside the editor's roadmap.** Each gets its own repo, its own lifecycle, and its own ship criteria. They orbit QBee — feed into it, build on it — but they're not gates on v1.0.
 
-**Gaps that bite users:**
-- Tree-sitter chunking would massively improve `@codebase` quality on real codebases (today's 40-line fixed-window misses function boundaries)
-- Settings UI for API keys (today: env-var only, awkward for new users)
-- Workspace root hardcoded in the SPA (today: dev path; needs editor URL-fragment plumbing)
-- No `@file` mention (have to copy-paste file content into chat)
-- No worker auto-restart (kill the worker → SPA loses connection → manual restart)
-- Placeholder icon (still a blue Q from ImageMagick)
+### QBee Forge — captured-feedback fine-tuning loop
 
-**Architectural debt:**
-- The `tmux-dev.sh` workflow is dev-mode. In the AppImage everything's bundled — but the dev path still uses Vite, which means dev iterations differ from production behavior. Acceptable for now; not v1.0-blocking.
-- Anthropic SDK is pinned at 0.30.x for `client.beta.promptCaching.messages.*`. Newer SDK versions move this to top-level. Migration is straightforward but should happen before v1.0.
-- The agent has access to read the whole filesystem under the workspace root. There's no per-file deny-list. v1.0 should add an opt-in deny pattern (e.g. `.env`, secrets dirs).
+**Goal:** every accepted/rejected completion is logged. A background pipeline trains a LoRA on top of the bundled FIM model nightly using the user's own code patterns. After a week of use, completions become noticeably more "in-house style."
+
+**Why it's a side project, not core:** training pipelines are heavy and platform-specific (CUDA / Metal / ROCm); the storage of training data raises privacy questions that need their own UI; the LoRA-merge step is tooling-heavy. The hooks land in QBee (a "log this completion outcome" event); the pipeline lives in `qbee-forge`.
+
+**Privacy invariant:** all training local-by-default; opt-in for any cloud-assisted training step. A clear export/import mechanism so users can take their LoRA with them.
+
+**Repo:** `qbee-forge` (separate). Could ship its own GUI, or be CLI-only.
+
+### QBee Bench — quality benchmarks for AI editors
+
+**Goal:** an open benchmark for AI-editor quality. FIM accept rate on a curated set of in-the-wild repos, agent task completion rate on a small curated set of GitHub issues, RAG retrieval quality on `@codebase`-style queries.
+
+**Why it's a side project:** benchmarks are infrastructure. They need a leaderboard, reproducible task definitions, and a contribution policy. They serve QBee (we use the bench to test PRs) but they should be useful to other AI editors too — Continue, Aider, Cursor benchmarking themselves on the same harness raises the whole field.
+
+**Repo:** `qbee-bench` (separate, open-license, contribution-friendly).
+
+### QBee MCP host
+
+**Goal:** support the [Model Context Protocol](https://modelcontextprotocol.io) so users can plug arbitrary external tools into the agent (filesystem, browsers, shell, custom domain tools) without each one being baked into the worker.
+
+**Why it's a side project for now:** it's a strict superset of v0.8's domain-tools work. v0.8 ships a small set of high-quality first-party tools. MCP host adds the open extension point. Decoupling lets MCP iterate on its own pace instead of blocking the in-editor agent UX.
+
+**Lands in:** `worker/` eventually, as an additional provider for tools. Stays a side project until the v0.8 first-party tools settle.
+
+### QBee Tutor (speculative)
+
+**Goal:** an in-editor learning mode for new programmers. Different UX target from the daily-driver editor: simpler chrome, scaffolded examples, "explain this code" inline annotations, deliberate slowness ("walk me through this line by line"). Could live as an editor mode toggle, a separate distribution, or a wrapper repo.
+
+**Why it's a side project:** the design space is very different from "editor for working programmers". Bundling them dilutes both. If we want to do this, it should be its own thing.
+
+**Status:** speculative. List it here so the idea has a home and we don't accidentally start building it in `editor/src/.../qbee/`.
+
+---
+
+## Architectural debt / gaps
+
+**Closed since v0.2.1:**
+- Settings UI for API keys ✅ (v0.3 — `Settings.tsx` + `pushSecretsToWorker`)
+- Workspace root from editor URL fragment ✅ (v0.3)
+- Provider preset/model persistence ✅ (v0.4)
+- Cross-platform builds ✅ (v0.4)
+
+**Open:**
+- **`Settings.tsx` uses localStorage for API keys.** Threat model is "same as a browser-stored token" — fine for local dev, suboptimal for shared machines. v1.0 should migrate to editor-side `SecretStorage` via the existing postMessage bridge. Marked TODO in `Settings.tsx:7` already.
+- **macOS Intel** is currently best-effort with `continue-on-error: true` on the macos-13 matrix entry. Either commit to it (paid runner, self-hosted, etc.) or formally drop in v0.9.
+- **Anthropic SDK is pinned at 0.30.x** for `client.beta.promptCaching.messages.*`. Newer SDK versions move this to top-level. Migration is straightforward but should happen before v1.0.
+- **Agent has unrestricted filesystem access** under workspace root. v0.8's worktree work mitigates this for write side; read side still has no per-file deny-list. v1.0 should add an opt-in deny pattern (e.g. `.env`, secrets dirs).
+- **Dev path uses Vite, prod path uses bundled SPA.** Behavior can diverge. Acceptable through v1.0; not worth fixing pre-1.0.
+- **Bundle size is going to grow significantly in v0.6** (embedded model). Plan for a `qbee-lite` artifact dimension if community feedback says the bundle is too large.
 
 ---
 
 ## Sequencing notes
 
-The milestones above are written in the order I'd ship them. Reasonable variations:
+The milestones above are written in the order I'd ship them. Hard order constraints:
 
-- **Skip v0.6 (distribution breadth) entirely** if Linux is the only platform that matters. AppImages already cover most of the audience for "fork of VSCode".
-- **Promote v0.8 (embedded llama.cpp) earlier** if user feedback says the Ollama install gate is the #1 friction.
-- **Defer v0.7 (performance)** if the model is genuinely the bottleneck — most users would rather wait 200ms for a better completion than have a 100ms one that's wrong.
+- **v0.5 before v0.6.** Reliability work (worker auto-restart, test suite, error surfaces) needs to land before we add a heavy native runtime that creates new failure modes.
+- **v0.6 before v0.7.** Inline AI chrome feels broken without a fast local model — Cmd+K with a 4-second cloud round-trip is not the experience.
+- **v0.7 before v0.8.** Agent worktrees + domain tools assume the chrome can render multi-file diffs inline; the chrome work makes the agent's output usable.
+- **Tree-sitter chunking belongs in v0.5** because it changes the index format, and stability commitments at v1.0 lock the format.
+- **Tests (v0.5) before adding more platforms (v0.9)** — adding distribution surfaces before having a regression net is a recipe for asymmetric breakage.
 
-The hard order constraints:
-- Tree-sitter chunking belongs in v0.3 because it changes the index format, and we want migrations done before v1.0 stability commitments.
-- Settings UI for API keys belongs before any wide distribution — env vars are not a real shippable UX.
-- Tests (v0.5) before macOS build (v0.6) — adding platforms before having a regression net is a recipe for asymmetric breakage.
+Reasonable variations:
+- **Skip v0.9 distribution breadth entirely** if AppImage/zip/.app already cover the audience. Push v0.9 work into v1.0 polish.
+- **Promote QBee Forge to v0.7 or v0.8** if community traction makes "your editor learns your style" the headline pitch. Currently sized as a side project because it's pipeline-heavy; could be reshaped if focused.
+- **Ship a `qbee-lite` (no bundled model) variant in v0.6** if community feedback says the +1.3 GB is a dealbreaker.
+
+The "is this just VSCode?" answer becomes a clear *no* at the end of v0.7. Everything before that is foundation; everything after is depth.
