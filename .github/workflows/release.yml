@@ -234,13 +234,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macos-13 is GitHub's free Intel runner and chronically queue-starved.
-          # Mark it best-effort so it can't block the release; Apple Silicon
-          # (macos-14, the dominant Mac platform since 2020) is the required path.
-          - { runs-on: macos-13,   arch: x64,   mach_arch: x86_64, optional: true }
-          - { runs-on: macos-14,   arch: arm64, mach_arch: arm64,  optional: false }
+          # macOS Intel (macos-13) is dropped from QBee's CI. GitHub's free
+          # Intel runner pool is chronically queue-starved — v0.4.4, v0.5.1,
+          # and v0.5.2 all sat 30+ minutes without a runner assignment, then
+          # we shipped manually. Apple has been deprecating Intel since 2020;
+          # GitHub is winding down the pool to match. Apple Silicon Mac users
+          # on Intel hardware can use Linux x64 in a VM or wait for Rosetta
+          # support (track in v0.9 distribution work).
+          - { runs-on: macos-14,   arch: arm64, mach_arch: arm64 }
     runs-on: ${{ matrix.runs-on }}
-    continue-on-error: ${{ matrix.optional }}
     timeout-minutes: 60
     steps:
       - name: Checkout
