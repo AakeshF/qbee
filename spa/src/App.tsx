@@ -1,11 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ChatEvent, ChatMessage, EditorContext, FsReadResponse, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
+import type { ChatEvent, ChatMessage, EditorContext, FsReadResponse, ProviderConfig, RagProbeResponse, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
 import { Agent } from './Agent.js'
 import { Markdown } from './Markdown.js'
 import { Settings, loadEmbeddingProvider, pushSecretsToWorker, CONFIG_CHANGE_EVENT } from './Settings.js'
 import { DEFAULT_PRESETS } from './presets.js'
 
 type Msg = ChatMessage & { id: string }
+
+const PROGRESS_STALL_MS = 30_000
+
+type IndexState =
+  | { stage: 'idle' }
+  | { stage: 'probing' }
+  | { stage: 'indexing'; phase: string; current?: number; total?: number; chunksSoFar?: number; lastEventAt: number }
+  | { stage: 'stalled'; phase: string; current?: number; total?: number; chunksSoFar?: number; idleSinceMs: number }
+  | { stage: 'error'; message: string; hint?: string }
+  | { stage: 'done'; files: number; chunks: number; tookMs: number }
 
 // Embedding provider for RAG. Independent from the chat provider because Anthropic
 // and Gemini don't expose embeddings through our adapter. Default targets Ollama on
@@ -36,7 +46,15 @@ export function App() {
   const [workspaceRoot, setWorkspaceRoot] = useState('')
   const [embeddingProvider, setEmbeddingProvider] = useState<ProviderConfig>(() => loadEmbeddingProvider() ?? DEFAULT_EMBEDDING_PROVIDER)
   const [ragStatus, setRagStatus] = useState<RagStatusResponse | null>(null)
-  const [indexProgress, setIndexProgress] = useState<string | null>(null)
+  // Index lifecycle state. Replaces the old indexProgress: string.
+  // - idle:     no index op in flight, ragStatus is the source of truth
+  // - probing:  pre-flight embedding-endpoint check
+  // - indexing: SSE stream is emitting progress events
+  // - stalled:  no progress event in PROGRESS_STALL_MS while indexing
+  // - error:    pre-flight or indexing terminated with a structured error
+  // - done:     last op succeeded; ragStatus refreshed
+  const [indexState, setIndexState] = useState<IndexState>({ stage: 'idle' })
+  const [indexDetailOpen, setIndexDetailOpen] = useState(false)
   const [input, setInput] = useState('')
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
@@ -129,7 +147,35 @@ export function App() {
   }, [auth, workspaceRoot])
 
   const startIndex = async () => {
-    setIndexProgress('starting…')
+    // Pre-flight: is the embedding endpoint reachable? Catching this BEFORE
+    // we burn through the file walk gives the user a clear error pointing at
+    // their config rather than a cryptic mid-stream failure.
+    setIndexState({ stage: 'probing' })
+    try {
+      const probeRes = await fetch('/api/rag/probe-embedding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader() },
+        body: JSON.stringify({ embeddingProvider }),
+      })
+      const probe = (await probeRes.json()) as RagProbeResponse
+      if (!probe.ok) {
+        setIndexState({
+          stage: 'error',
+          message: `Embedding endpoint not reachable`,
+          hint: probe.error ?? `Check ${embeddingProvider.baseUrl ?? '(no baseUrl)'} — is your local model server running?`,
+        })
+        return
+      }
+    } catch (err) {
+      setIndexState({
+        stage: 'error',
+        message: 'Could not reach the worker',
+        hint: (err as Error).message,
+      })
+      return
+    }
+
+    setIndexState({ stage: 'indexing', phase: 'starting…', lastEventAt: Date.now() })
     try {
       const res = await fetch('/api/rag/index', {
         method: 'POST',
@@ -137,33 +183,62 @@ export function App() {
         body: JSON.stringify({ workspaceRoot, embeddingProvider }),
       })
       if (!res.ok || !res.body) {
-        setIndexProgress(`error: HTTP ${res.status}`)
+        setIndexState({ stage: 'error', message: `index request failed: HTTP ${res.status}` })
         return
       }
       let total = 0
       let chunks = 0
+      let current = 0
       for await (const evt of parseSSE<{ type: string;[k: string]: unknown }>(res.body)) {
+        const now = Date.now()
         if (evt.type === 'discovered') {
           total = evt.count as number
-          setIndexProgress(`discovered ${total} files`)
+          setIndexState({ stage: 'indexing', phase: `discovered ${total} files`, total, current: 0, chunksSoFar: 0, lastEventAt: now })
         } else if (evt.type === 'file') {
-          setIndexProgress(`${(evt.index as number) + 1}/${total}: ${evt.path}`)
+          current = (evt.index as number) + 1
+          setIndexState({ stage: 'indexing', phase: evt.path as string, total, current, chunksSoFar: chunks, lastEventAt: now })
         } else if (evt.type === 'embedded') {
           chunks += evt.chunkCount as number
-          setIndexProgress(`embedded ${chunks} chunks`)
+          setIndexState((prev) => {
+            if (prev.stage !== 'indexing' && prev.stage !== 'stalled') return prev
+            const next: Extract<IndexState, { stage: 'indexing' }> = { stage: 'indexing', phase: prev.phase, chunksSoFar: chunks, lastEventAt: now }
+            if (prev.total !== undefined) next.total = prev.total
+            if (prev.current !== undefined) next.current = prev.current
+            return next
+          })
         } else if (evt.type === 'done') {
-          setIndexProgress(`✓ ${evt.files} files / ${evt.chunks} chunks (${evt.tookMs}ms)`)
+          setIndexState({ stage: 'done', files: evt.files as number, chunks: evt.chunks as number, tookMs: evt.tookMs as number })
         } else if (evt.type === 'error') {
-          setIndexProgress(`error: ${evt.message}`)
+          setIndexState({ stage: 'error', message: evt.message as string })
         }
       }
       // Refresh status after indexing.
       const statusRes = await fetch(`/api/rag/status?workspaceRoot=${encodeURIComponent(workspaceRoot)}`, { headers: authHeader() })
       if (statusRes.ok) setRagStatus(await statusRes.json())
     } catch (err) {
-      setIndexProgress(`error: ${(err as Error).message}`)
+      setIndexState({ stage: 'error', message: (err as Error).message })
     }
   }
+
+  // Stall detection: if no progress event arrives for PROGRESS_STALL_MS while
+  // we're in 'indexing' state, flip to 'stalled'. The user sees a clear
+  // 'stuck' badge instead of staring at a spinner that won't change.
+  useEffect(() => {
+    if (indexState.stage !== 'indexing') return undefined
+    const timer = setInterval(() => {
+      setIndexState((prev) => {
+        if (prev.stage !== 'indexing') return prev
+        const idle = Date.now() - prev.lastEventAt
+        if (idle < PROGRESS_STALL_MS) return prev
+        const next: Extract<IndexState, { stage: 'stalled' }> = { stage: 'stalled', phase: prev.phase, idleSinceMs: idle }
+        if (prev.total !== undefined) next.total = prev.total
+        if (prev.current !== undefined) next.current = prev.current
+        if (prev.chunksSoFar !== undefined) next.chunksSoFar = prev.chunksSoFar
+        return next
+      })
+    }, 5000)
+    return () => clearInterval(timer)
+  }, [indexState.stage])
 
   // Detect a leading "@codebase <query>" mention. Strip it, return the cleaned
   // user text plus the search query (defaults to the whole message).
@@ -311,14 +386,13 @@ export function App() {
           ))}
         </select>
         <input style={styles.modelInput} value={model} onChange={(e) => setModel(e.target.value)} disabled={busy} />
-        <span style={styles.ragBadge} title={ragStatus ? `${ragStatus.filesIndexed} files / ${ragStatus.chunks} chunks` : 'not indexed yet'}>
-          rag: {ragStatus ? `${ragStatus.chunks}` : '—'}
-        </span>
-        <button style={styles.indexBtn} onClick={startIndex} disabled={busy} title={`Embed via ${embeddingProvider.model} at ${embeddingProvider.baseUrl}`}>
-          {indexProgress ? '⟳' : 'Index'}
+        <RagStatusBadge state={indexState} ragStatus={ragStatus} onClick={() => setIndexDetailOpen((v) => !v)} />
+        <button style={styles.indexBtn} onClick={startIndex} disabled={busy || indexState.stage === 'probing' || indexState.stage === 'indexing'} title={`Embed via ${embeddingProvider.model} at ${embeddingProvider.baseUrl}`}>
+          {(indexState.stage === 'probing' || indexState.stage === 'indexing' || indexState.stage === 'stalled') ? '⟳' : 'Index'}
         </button>
       </header>
-      {indexProgress && <div style={styles.indexLine}>{indexProgress}</div>}
+      <RagStatusDetail state={indexState} open={indexDetailOpen} onRetry={startIndex} onDismiss={() => setIndexState({ stage: 'idle' })} />
+      {indexState.stage === 'indexing' && <RagProgressLine state={indexState} />}
       {tab === 'settings' ? (
         <Settings
           auth={auth}
@@ -388,6 +462,111 @@ export function App() {
       </form>
       </>
       )}
+    </div>
+  )
+}
+
+function RagStatusBadge({ state, ragStatus, onClick }: { state: IndexState; ragStatus: RagStatusResponse | null; onClick: () => void }) {
+  let label: string
+  let bg: string
+  let title: string
+  switch (state.stage) {
+    case 'idle':
+    case 'done':
+      label = `rag: ${ragStatus ? ragStatus.chunks : '—'}`
+      bg = '#2a4a3a'
+      title = ragStatus ? `${ragStatus.filesIndexed} files / ${ragStatus.chunks} chunks` : 'not indexed yet'
+      break
+    case 'probing':
+      label = 'rag: probing…'
+      bg = '#3a4a6a'
+      title = 'Checking embedding endpoint'
+      break
+    case 'indexing': {
+      const pct = state.total ? Math.round((state.current ?? 0) / state.total * 100) : null
+      label = pct !== null ? `rag: indexing ${pct}%` : 'rag: indexing'
+      bg = '#3a4a6a'
+      title = state.phase
+      break
+    }
+    case 'stalled':
+      label = 'rag: stuck'
+      bg = '#6a5a2a'
+      title = `No progress for ${Math.round(state.idleSinceMs / 1000)}s — embedding endpoint slow or hung`
+      break
+    case 'error':
+      label = 'rag: ✗ error'
+      bg = '#6a3a3a'
+      title = state.message
+      break
+  }
+  return (
+    <span style={{ ...ragBadgeBase, background: bg, cursor: 'pointer' }} title={title} onClick={onClick}>
+      {label}
+    </span>
+  )
+}
+
+const ragBadgeBase: React.CSSProperties = { color: '#dde', padding: '2px 6px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace' }
+
+function RagStatusDetail({ state, open, onRetry, onDismiss }: { state: IndexState; open: boolean; onRetry: () => void; onDismiss: () => void }) {
+  // Errors / stalled states show automatically (sticky); idle/done only when toggled open.
+  const sticky = state.stage === 'error' || state.stage === 'stalled'
+  if (!open && !sticky) return null
+  let body: React.ReactNode = null
+  if (state.stage === 'error') {
+    body = (
+      <>
+        <div style={{ color: '#ffaaaa', fontWeight: 600 }}>{state.message}</div>
+        {state.hint && <div style={{ color: '#ddc' }}>{state.hint}</div>}
+        <div style={ragDetailActions}>
+          <button style={ragDetailBtn} onClick={onRetry}>Retry</button>
+          <button style={ragDetailBtnGhost} onClick={onDismiss}>Dismiss</button>
+        </div>
+      </>
+    )
+  } else if (state.stage === 'stalled') {
+    body = (
+      <>
+        <div style={{ color: '#ffd', fontWeight: 600 }}>Indexing appears stuck</div>
+        <div style={{ color: '#ddc' }}>
+          No progress for {Math.round(state.idleSinceMs / 1000)}s. The embedding endpoint may have slowed down or hung.
+          {state.total !== undefined && state.current !== undefined ? ` Last seen at file ${state.current}/${state.total}.` : ''}
+        </div>
+        <div style={ragDetailActions}>
+          <button style={ragDetailBtnGhost} onClick={onDismiss}>Cancel & dismiss</button>
+        </div>
+      </>
+    )
+  } else if (state.stage === 'done') {
+    body = (
+      <div style={{ color: '#ddc' }}>
+        Indexed {state.files} files, {state.chunks} chunks in {(state.tookMs / 1000).toFixed(1)}s.
+      </div>
+    )
+  } else if (state.stage === 'idle') {
+    body = (
+      <div style={{ color: '#ddc' }}>
+        Click <strong>Index</strong> to embed the workspace for <code>@codebase</code>. Re-index after big refactors; small edits are picked up automatically by the watcher.
+      </div>
+    )
+  }
+  return <div style={ragDetailRoot}>{body}</div>
+}
+
+const ragDetailRoot: React.CSSProperties = { padding: '8px 12px', fontSize: 11, fontFamily: 'monospace', background: '#1a1a1a', color: '#bbb', borderBottom: '1px solid #333', display: 'flex', flexDirection: 'column', gap: 4 }
+const ragDetailActions: React.CSSProperties = { display: 'flex', gap: 6, marginTop: 4 }
+const ragDetailBtn: React.CSSProperties = { background: '#3a6cd8', border: 'none', color: 'white', padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: 'pointer' }
+const ragDetailBtnGhost: React.CSSProperties = { background: 'transparent', border: '1px solid #444', color: '#aaa', padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: 'pointer' }
+
+function RagProgressLine({ state }: { state: Extract<IndexState, { stage: 'indexing' }> }) {
+  const pct = state.total ? Math.round((state.current ?? 0) / state.total * 100) : null
+  return (
+    <div style={{ padding: '4px 12px', fontSize: 11, fontFamily: 'monospace', background: '#1a1a1a', color: '#9eccaa', borderBottom: '1px solid #333' }}>
+      {pct !== null ? `${pct}% · ` : ''}
+      {state.current !== undefined && state.total !== undefined ? `${state.current}/${state.total} · ` : ''}
+      {state.chunksSoFar !== undefined ? `${state.chunksSoFar} chunks · ` : ''}
+      {state.phase}
     </div>
   )
 }

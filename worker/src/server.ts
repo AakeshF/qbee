@@ -8,7 +8,7 @@ import path from 'node:path'
 import Fastify from 'fastify'
 import fastifyStatic from '@fastify/static'
 import { promises as fs } from 'node:fs'
-import { AgentRunRequest, ApproveToolRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
+import { AgentRunRequest, ApproveToolRequest, ChatRequest, CompleteRequest, EchoRequest, FsReadRequest, RagIndexRequest, RagProbeRequest, RagSearchRequest, type AgentEvent, type ChatEvent, type EchoEvent, type FsReadResponse, type RagIndexEvent, type RagProbeResponse, type RagSearchResponse, type RagStatusResponse } from '@qbee/shared'
 import { createProvider } from './providers/index.js'
 import { runAgent } from './agent/loop.js'
 import { indexWorkspace } from './rag/indexer.js'
@@ -345,6 +345,24 @@ async function probeEmbeddingDim(providerConfig: import('@qbee/shared').Provider
   const result = await provider.embed(['probe'])
   return result.dim
 }
+
+// Health probe surfaced to the dashboard / chat header. Returns
+// { ok: true, dim } when the embedding endpoint responds, otherwise
+// { ok: false, error } so the UI can show a specific reason.
+app.post('/api/rag/probe-embedding', async (req, reply) => {
+  const parsed = RagProbeRequest.safeParse(req.body)
+  if (!parsed.success) {
+    reply.code(400).send({ ok: false, error: parsed.error.message } satisfies RagProbeResponse)
+    return
+  }
+  try {
+    const dim = await probeEmbeddingDim(parsed.data.embeddingProvider)
+    reply.send({ ok: true, dim } satisfies RagProbeResponse)
+  } catch (err) {
+    const msg = (err as Error).message
+    reply.send({ ok: false, error: msg } satisfies RagProbeResponse)
+  }
+})
 
 app.post('/api/rag/index', async (req, reply) => {
   const parsed = RagIndexRequest.safeParse(req.body)

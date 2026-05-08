@@ -273,3 +273,18 @@ export const RagStatusResponse = z.object({
   lastIndexed: z.number().nullable(),
 })
 export type RagStatusResponse = z.infer<typeof RagStatusResponse>
+
+// Health probe of the user's embedding provider. Returns the model's dim if
+// reachable, or a structured error so the dashboard can say "Ollama not
+// reachable at 127.0.0.1:11434" instead of silently failing mid-index.
+export const RagProbeRequest = z.object({
+  embeddingProvider: ProviderConfig,
+})
+export type RagProbeRequest = z.infer<typeof RagProbeRequest>
+
+export const RagProbeResponse = z.object({
+  ok: z.boolean(),
+  dim: z.number().int().positive().optional(),
+  error: z.string().optional(),
+})
+export type RagProbeResponse = z.infer<typeof RagProbeResponse>
