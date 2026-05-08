@@ -114,9 +114,15 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
     return () => window.removeEventListener('message', handler)
   }, [])
 
+  // runId stamps every apply_edit with the agent run that produced the diff,
+  // so the editor's CheckpointStore groups all edits from one run into a
+  // single restorable snapshot. Generated fresh in run() and refreshed across
+  // runs.
+  const runIdRef = useRef<string>(`run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+
   const applyDiff = (diffId: string, path: string, oldContent: string, newContent: string) => {
     setItems((arr) => arr.map((it) => (it.kind === 'file_diff' && it.diffId === diffId ? { ...it, status: 'applying' as DiffStatus } : it)))
-    window.parent.postMessage({ type: 'apply_edit', requestId: diffId, path, oldContent, newContent }, '*')
+    window.parent.postMessage({ type: 'apply_edit', requestId: diffId, runId: runIdRef.current, path, oldContent, newContent }, '*')
   }
 
   const rejectDiff = (diffId: string) => {
@@ -163,6 +169,9 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
     const text = input.trim()
     if (!text || busy) return
     setInput('')
+    // Fresh runId for this run — the editor's CheckpointStore groups apply_edit
+    // calls under this id so 'Undo Last Agent Run' rolls back exactly this run.
+    runIdRef.current = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
     setItems((arr) => [...arr, { kind: 'user', text }])
     setBusy(true)
 
