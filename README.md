@@ -58,28 +58,14 @@ The build is unsigned, so the first launch needs **right-click → Open** to byp
 
 ### First-run setup
 
-QBee reads provider API keys from the worker's environment for now. Two options:
+Open the AI sidebar (default: right side) and you'll see three tabs: **chat**, **agent**, **settings**.
 
-**Local model (no API key needed):** install Ollama or LM Studio, run a model. The chat tab's "Ollama (local)" preset points at `127.0.0.1:11434` by default; the model field is editable, and your selection is remembered between sessions.
+1. Click **settings**.
+2. **For cloud providers** — paste your `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, or any OpenAI-compatible token. They persist in browser-local storage and are pushed to the worker on every load.
+3. **For local models (no API key needed)** — install Ollama or LM Studio, pull a model, then in the **chat** tab pick the "Ollama (local)" preset (default `127.0.0.1:11434`). Edit the model field to whatever you've pulled (`qwen2.5-coder:7b`, `deepseek-coder-v2`, etc.). Your preset and model selection persist between launches.
+4. Optional: in **settings**, customize the embedding endpoint for `@codebase` (defaults to Ollama's `nomic-embed-text`).
 
-**Anthropic / Gemini:** set the keys in the environment before launching:
-
-```sh
-# Linux
-ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... ./QBee-0.4.4-x86_64.AppImage
-```
-
-```powershell
-# Windows (PowerShell)
-$env:ANTHROPIC_API_KEY="sk-ant-..."; $env:GEMINI_API_KEY="..."; .\QBee.exe
-```
-
-```sh
-# macOS
-ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... open -a QBee
-```
-
-Then pick a preset in the chat tab's header.
+That's it — no terminal env vars, no config files. Switch back to **chat** and start a conversation.
 
 ### `@codebase` setup
 
