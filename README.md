@@ -2,7 +2,7 @@
 
 An open-source AI code editor: fork of VSCode with first-class AI plumbing. Bring your own model — local (Ollama, LM Studio, llama.cpp, vLLM), Anthropic Claude, or Google Gemini — and configure each function (chat, agent, inline completions, embeddings) independently.
 
-> **Status:** v0.5.1. Cross-platform releases for Linux (x64, arm64), Windows (x64), and macOS Apple Silicon. macOS Intel deferred (free CI runner queue-starved).
+> **Status:** v0.5.2. Cross-platform releases for Linux (x64, arm64), Windows (x64), and macOS Apple Silicon. macOS Intel is not built — GitHub's free Intel runner pool is no longer reliable; use Linux x64 in a VM if you need Intel Mac support.
 
 ## What's in v0.5
 
@@ -26,7 +26,7 @@ All downloads live on the [latest release page](https://github.com/AakeshF/qbee/
 ### Linux (x86_64 / aarch64)
 
 ```sh
-curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.1/QBee-0.5.1-x86_64.AppImage
+curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.2/QBee-0.5.1-x86_64.AppImage
 chmod +x QBee-0.5.1-x86_64.AppImage
 ./QBee-0.5.1-x86_64.AppImage
 ```
@@ -36,7 +36,7 @@ For arm64, swap `x86_64` for `aarch64`.
 Verify the SHA-256:
 
 ```sh
-curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.1/QBee-0.5.1-x86_64.AppImage.sha256
+curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.2/QBee-0.5.1-x86_64.AppImage.sha256
 sha256sum -c QBee-0.5.1-x86_64.AppImage.sha256
 ```
 
@@ -46,17 +46,17 @@ sha256sum -c QBee-0.5.1-x86_64.AppImage.sha256
 
 ### Windows (x64)
 
-Download [`QBee-0.5.1-x64-win.zip`](https://github.com/AakeshF/qbee/releases/download/v0.5.1/QBee-0.5.1-x64-win.zip), unzip anywhere, and run `QBee.exe` at the root of the extracted folder. The launcher is a small Go binary that boots the bundled worker before opening the editor — no console window flashes.
+Download [`QBee-0.5.1-x64-win.zip`](https://github.com/AakeshF/qbee/releases/download/v0.5.2/QBee-0.5.1-x64-win.zip), unzip anywhere, and run `QBee.exe` at the root of the extracted folder. The launcher is a small Go binary that boots the bundled worker before opening the editor — no console window flashes.
 
 It's a portable zip, no installer. Pin `QBee.exe` to your Start menu / taskbar if you want a launcher.
 
 ### macOS (Apple Silicon)
 
-Download [`QBee-0.5.1-arm64-mac.dmg`](https://github.com/AakeshF/qbee/releases/download/v0.5.1/QBee-0.5.1-arm64-mac.dmg), open it, drag `QBee.app` to `/Applications`. (A `-arm64-mac.zip` is also available for users who prefer that.)
+Download [`QBee-0.5.1-arm64-mac.dmg`](https://github.com/AakeshF/qbee/releases/download/v0.5.2/QBee-0.5.1-arm64-mac.dmg), open it, drag `QBee.app` to `/Applications`. (A `-arm64-mac.zip` is also available for users who prefer that.)
 
 The build is unsigned, so the first launch needs **right-click → Open** to bypass Gatekeeper. macOS will remember the exception after that.
 
-> macOS Intel (x86_64) is not yet shipped — GitHub Actions' free Intel runner is queue-starved. Apple Silicon Mac users via Rosetta should use the arm64 build.
+> macOS Intel (x86_64) is not supported by QBee's release pipeline. GitHub's free Intel macOS runner pool is chronically queue-starved (Apple is deprecating Intel). If you have an Intel Mac, run Linux x64 in a VM or use the macOS arm64 build on an Apple Silicon machine you have access to.
 
 ### First-run setup
 
