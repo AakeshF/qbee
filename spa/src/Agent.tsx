@@ -198,45 +198,40 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
       })
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
 
-      // Buffer text deltas into a rolling "text" item to avoid spamming a new line per token.
-      let pendingText: Item | null = null
-      const flushText = () => {
-        if (pendingText) {
-          const captured = pendingText
-          setItems((arr) => [...arr, captured])
-          pendingText = null
-        }
-      }
-      // Accumulate the assistant's text-only response so we can append it to the
-      // multi-turn conversation when the run completes.
+      // We collapse a run of text deltas into a single rolling text bubble.
+      // The bubble lives in `items` from the moment the first delta arrives;
+      // subsequent deltas mutate that same item in place. `bubbleOpen` tracks
+      // whether items[last] is the current text bubble we should keep
+      // appending to. Any non-text event closes the bubble.
+      //
+      // Earlier versions of this code maintained a parallel `pendingText`
+      // accumulator AND wrote to items, then 'flushed' pendingText into
+      // items on tool events. That double-tracked the bubble and
+      // double-appended on flush — the user-visible duplicate output.
+      let bubbleOpen = false
       let assistantText = ''
 
       for await (const evt of parseSSE<AgentEvent>(res.body)) {
         if (evt.type === 'text') {
           assistantText += evt.value
-          if (pendingText && pendingText.kind === 'text') {
-            pendingText = { kind: 'text', text: pendingText.text + evt.value }
-            // Live-update the in-progress text bubble.
+          if (bubbleOpen) {
             setItems((arr) => {
               const out = arr.slice()
               const last = out[out.length - 1]
               if (last && last.kind === 'text') {
                 out[out.length - 1] = { ...last, text: last.text + evt.value }
-                return out
               }
-              return [...arr, { kind: 'text' as const, text: evt.value }]
+              return out
             })
-            // Track for the flush logic — we already mirrored into state above.
-            pendingText = { kind: 'text', text: pendingText.text }
           } else {
-            flushText()
-            pendingText = { kind: 'text', text: evt.value }
-            setItems((arr) => [...arr, { kind: 'text', text: evt.value }])
+            setItems((arr) => [...arr, { kind: 'text' as const, text: evt.value }])
+            bubbleOpen = true
           }
         } else if (evt.type === 'tool_use') {
-          flushText()
+          bubbleOpen = false
           setItems((arr) => [...arr, { kind: 'tool_use', id: evt.id, name: evt.name, input: evt.input }])
         } else if (evt.type === 'tool_result') {
+          bubbleOpen = false
           setItems((arr) => [
             ...arr,
             {
@@ -248,6 +243,7 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
             },
           ])
         } else if (evt.type === 'file_diff') {
+          bubbleOpen = false
           const diffId = cryptoId()
           setItems((arr) => [
             ...arr,
@@ -256,7 +252,7 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
         } else if (evt.type === 'iteration') {
           // No UI for iteration boundaries — just for debugging.
         } else if (evt.type === 'awaiting_approval') {
-          flushText()
+          bubbleOpen = false
           const allowList = loadAllowList(workspaceRoot)
           const autoApprove = allowList.includes(evt.command)
           setItems((arr) => [
@@ -273,10 +269,10 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
             void submitApproval(evt.approvalId, true)
           }
         } else if (evt.type === 'error') {
-          flushText()
+          bubbleOpen = false
           setItems((arr) => [...arr, { kind: 'error', message: evt.message }])
         } else if (evt.type === 'done') {
-          flushText()
+          bubbleOpen = false
           setItems((arr) => [...arr, { kind: 'done', reason: evt.reason }])
         }
       }

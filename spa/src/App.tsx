@@ -79,6 +79,12 @@ export function App() {
   // open tabs). When running standalone (Vite dev outside the editor), no host is
   // posting messages and editorContext stays undefined — chat/agent still work,
   // they just don't have IDE awareness.
+  //
+  // Once the listener is wired, post a 'qbee_spa_ready' message so the editor
+  // re-pushes current state. The bridge fires its initial push synchronously on
+  // construction, but that races against the iframe finishing load + this
+  // useEffect running. Without the handshake the SPA misses the initial push
+  // and stays empty until the user changes editors.
   useEffect(() => {
     const handler = (e: MessageEvent) => {
       const data = e.data
@@ -86,6 +92,7 @@ export function App() {
       setEditorContext(data.payload as EditorContext)
     }
     window.addEventListener('message', handler)
+    try { window.parent.postMessage({ type: 'qbee_spa_ready' }, '*') } catch { /* standalone dev */ }
     return () => window.removeEventListener('message', handler)
   }, [])
 
