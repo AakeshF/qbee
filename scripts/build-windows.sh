@@ -137,10 +137,13 @@ else
   done
 fi
 [ -f "$OUT" ] || { echo "Failed to create $OUT" >&2; exit 7; }
+# Run from the file's dir so the sidecar records just the basename — `sha256sum -c`
+# on a user's machine looks for the path that's in the file, and an absolute
+# CI-runner path doesn't exist locally.
 if command -v sha256sum >/dev/null 2>&1; then
-  sha256sum "$OUT" > "${OUT}.sha256"
+  ( cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 elif command -v shasum >/dev/null 2>&1; then
-  shasum -a 256 "$OUT" > "${OUT}.sha256"
+  ( cd "$(dirname "$OUT")" && shasum -a 256 "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 else
   certutil -hashfile "$OUT" SHA256 | head -2 | tail -1 | tr -d '\r' | awk -v p="$OUT" '{print $1 "  " p}' > "${OUT}.sha256"
 fi

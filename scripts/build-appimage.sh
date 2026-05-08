@@ -169,8 +169,11 @@ done
 export ARCH="$APPIMAGE_ARCH"
 "$APPIMAGETOOL" --no-appstream "$APPDIR" "$OUT"
 
-# Checksum so users can verify even without GPG.
-sha256sum "$OUT" > "${OUT}.sha256"
+# Checksum so users can verify even without GPG. Run from the file's dir so
+# the sidecar records the basename rather than an absolute CI-runner path —
+# otherwise `sha256sum -c` fails on the user's machine looking for a path
+# that only exists in the build env.
+( cd "$(dirname "$OUT")" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 
 echo
 echo "✓ $OUT"

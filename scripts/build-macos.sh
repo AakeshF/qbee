@@ -182,10 +182,13 @@ fi
 # Checksums
 for f in "$ZIP_OUT" "$DMG_OUT"; do
   [ -n "$f" ] && [ -f "$f" ] || continue
+  # Run from the file's dir so the sidecar records just the basename — `sha256sum -c`
+  # on a user's machine looks up the path written in the file, and an
+  # absolute CI-runner path doesn't exist locally.
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$f" > "${f}.sha256"
+    ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" > "$(basename "$f").sha256" )
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$f" > "${f}.sha256"
+    ( cd "$(dirname "$f")" && shasum -a 256 "$(basename "$f")" > "$(basename "$f").sha256" )
   fi
 done
 
