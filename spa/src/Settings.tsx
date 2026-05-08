@@ -14,6 +14,11 @@
 import { useEffect, useState } from 'react'
 import type { LocalModel, LocalModelsProbeResponse, ProviderConfig } from '@qbee/shared'
 import { DEFAULT_PRESETS } from './presets.js'
+import { getEditorSetting, setEditorSetting, onEditorSettingChanged } from './editorBridge.js'
+
+const FIM_KEY_ENABLED = 'qbee.inlineCompletions.enabled'
+const FIM_KEY_MODEL = 'qbee.inlineCompletions.model'
+const FIM_KEY_BASE_URL = 'qbee.inlineCompletions.baseUrl'
 
 const STORAGE_KEY = 'qbee.secrets.v1'
 const EMBEDDING_KEY = 'qbee.embeddingProvider.v1'
@@ -101,6 +106,41 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   // loopback and returns whatever's running.
   const [localProbe, setLocalProbe] = useState<LocalModelsProbeResponse | null>(null)
   const [probing, setProbing] = useState(false)
+
+  // FIM (inline completions) config — lives in IConfigurationService, not
+  // localStorage, because the InlineCompletionProvider on the editor side
+  // is the only consumer. Read on mount via the editor bridge; write back
+  // on edit. Standalone Vite dev (no editor host) just leaves these blank
+  // — the bridge times out cleanly.
+  const [fimEnabled, setFimEnabled] = useState<boolean | null>(null)
+  const [fimModel, setFimModel] = useState<string>('')
+  const [fimBaseUrl, setFimBaseUrl] = useState<string>('')
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all([
+      getEditorSetting<boolean>(FIM_KEY_ENABLED),
+      getEditorSetting<string>(FIM_KEY_MODEL),
+      getEditorSetting<string>(FIM_KEY_BASE_URL),
+    ]).then(([enabled, model, baseUrl]) => {
+      if (cancelled) return
+      if (typeof enabled === 'boolean') setFimEnabled(enabled)
+      if (typeof model === 'string') setFimModel(model)
+      if (typeof baseUrl === 'string') setFimBaseUrl(baseUrl)
+    })
+    const off = onEditorSettingChanged((key, value) => {
+      if (cancelled) return
+      if (key === FIM_KEY_ENABLED && typeof value === 'boolean') setFimEnabled(value)
+      else if (key === FIM_KEY_MODEL && typeof value === 'string') setFimModel(value)
+      else if (key === FIM_KEY_BASE_URL && typeof value === 'string') setFimBaseUrl(value)
+    })
+    return () => { cancelled = true; off() }
+  }, [])
+
+  const updateFimSetting = async (key: string, value: unknown) => {
+    const res = await setEditorSetting(key, value)
+    setSavedNote(res.ok ? `saved ${key.replace('qbee.inlineCompletions.', 'FIM ')}` : `failed: ${res.error ?? 'unknown'}`)
+  }
 
   const setChatPresetIdx = (idx: number) => {
     setChatPresetIdxState(idx)
@@ -201,6 +241,15 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
     setEmbedModel(m.id)
     setSavedNote(`embedding → ${m.id}`)
   }
+  const useLocalModelForFim = async (m: LocalModel) => {
+    setFimModel(m.id)
+    setFimBaseUrl(`${m.baseUrl}/v1`)
+    await Promise.all([
+      setEditorSetting(FIM_KEY_MODEL, m.id),
+      setEditorSetting(FIM_KEY_BASE_URL, `${m.baseUrl}/v1`),
+    ])
+    setSavedNote(`FIM → ${m.id}`)
+  }
 
   const saveEmbeddingProvider = () => {
     const cfg: ProviderConfig = { id: 'openai-compatible', model: embedModel, ...(embedBaseUrl ? { baseUrl: embedBaseUrl } : {}) }
@@ -247,8 +296,34 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
 
           <div style={styles.providerRow}>
             <div style={styles.providerLabel}>Inline FIM</div>
-            <div style={styles.providerNote}>Configured via VSCode settings: <code>qbee.inlineCompletions.*</code> — provider, model, baseUrl, maxTokens. Open Settings (Ctrl+,) and search "qbee".</div>
+            <input
+              style={styles.providerSelect}
+              placeholder="baseUrl (http://127.0.0.1:11434/v1)"
+              value={fimBaseUrl}
+              onChange={(e) => setFimBaseUrl(e.target.value)}
+              onBlur={() => updateFimSetting(FIM_KEY_BASE_URL, fimBaseUrl)}
+              title="OpenAI-compatible endpoint (Ollama / LM Studio / llama.cpp)"
+            />
+            <input
+              style={styles.providerModel}
+              placeholder="model"
+              value={fimModel}
+              onChange={(e) => setFimModel(e.target.value)}
+              onBlur={() => updateFimSetting(FIM_KEY_MODEL, fimModel)}
+              title="FIM-capable code model (Qwen, DeepSeek, Codestral, StarCoder)"
+            />
           </div>
+          {fimEnabled === false && (
+            <div style={styles.providerNote}>
+              FIM is currently <strong>disabled</strong>.
+              <button
+                style={{ ...styles.smallBtn, marginLeft: 8 }}
+                onClick={() => { setFimEnabled(true); void updateFimSetting(FIM_KEY_ENABLED, true) }}
+              >
+                Enable
+              </button>
+            </div>
+          )}
 
           <div style={styles.localModelsBlock}>
             <div style={styles.localModelsHeader}>
@@ -281,6 +356,7 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
                     <span style={styles.flex} />
                     <button style={styles.smallBtn} onClick={() => useLocalModelForChat(m)} title="Use for chat">→ chat</button>
                     <button style={styles.smallBtn} onClick={() => useLocalModelForAgent(m)} title="Use for agent">→ agent</button>
+                    <button style={styles.smallBtn} onClick={() => void useLocalModelForFim(m)} title="Use for inline (FIM) completions. Best with FIM-capable code models (Qwen, DeepSeek, etc.)">→ FIM</button>
                     <button style={styles.smallBtn} onClick={() => useLocalModelForEmbedding(m)} title="Use for embeddings (@codebase). Only meaningful for embedding models like nomic-embed-text.">→ embed</button>
                   </div>
                 ))}
