@@ -82,6 +82,17 @@ for platform_pkg in sqlite-vec-linux-x64 sqlite-vec-linux-arm64 sqlite-vec-darwi
   copy_dep "$platform_pkg" 2>/dev/null || true
 done
 
+# Tree-sitter wasms — copy the core runtime + the language wasms the chunker
+# might load. The chunker (worker/src/rag/treeSitterChunker.ts) reads from
+# $OUT/wasm/ at runtime in the bundled config.
+echo "==> copying tree-sitter wasms"
+mkdir -p "$OUT/wasm"
+cp node_modules/web-tree-sitter/tree-sitter.wasm "$OUT/wasm/tree-sitter.wasm"
+for lang in typescript tsx javascript python rust go java c cpp; do
+  cp "node_modules/tree-sitter-wasms/out/tree-sitter-${lang}.wasm" "$OUT/wasm/tree-sitter-${lang}.wasm"
+done
+ls -1 "$OUT/wasm/" | wc -l | xargs -I {} echo "  {} wasms copied"
+
 # Smoke-test the bundle parses. (Doesn't run it — that needs the env.)
 node --check "$OUT/server.cjs"
 

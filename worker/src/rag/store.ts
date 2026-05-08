@@ -1,11 +1,19 @@
 // SQLite-backed RAG store. One DB per workspace at <workspaceRoot>/.qbee/index.sqlite.
 // Three tables: chunks (rich rows), chunks_vec (sqlite-vec virtual), chunks_fts (FTS5).
-// `meta` records the embedding model + dim so we can reject stale indexes.
+// `meta` records the embedding model + dim + chunker_version so we can reject
+// stale indexes when any of those change.
 
 import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
+
+// Bump this whenever the chunking strategy changes such that existing chunks
+// would not be reproduced byte-for-byte by re-running the chunker. On open,
+// we wipe and force a re-index when meta.chunker_version drifts.
+//   1 — fixed-window line chunker (40 lines, 4 overlap)
+//   2 — tree-sitter chunker for supported langs, fixed-window fallback
+export const CHUNKER_VERSION = 2
 
 export type Chunk = {
   id?: number
@@ -77,6 +85,15 @@ export class RagStore {
     this.db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0(embedding FLOAT[${dim}])`)
 
     this.setMeta('dim', String(dim))
+
+    // Invalidate stale chunks if the chunker has been upgraded since this DB
+    // was last written. We don't drop the schema — just clear the rows so a
+    // re-index repopulates with the new chunk shape.
+    const recordedChunker = this.getMeta('chunker_version')
+    if (recordedChunker !== String(CHUNKER_VERSION)) {
+      this.db.exec(`DELETE FROM chunks_vec; DELETE FROM chunks; DELETE FROM chunks_fts;`)
+      this.setMeta('chunker_version', String(CHUNKER_VERSION))
+    }
   }
 
   setMeta(key: string, value: string): void {

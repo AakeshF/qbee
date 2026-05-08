@@ -1,7 +1,13 @@
-// Fixed-window chunker. Tree-sitter granularity is on the Phase 5+ wishlist; for now
-// we cut by line count with overlap. Works for every text file regardless of language.
+// Chunker. For supported source languages, parses with tree-sitter and emits
+// one chunk per top-level definition (function/class/etc.). For everything
+// else, falls back to fixed-window line-based chunking.
+//
+// Tree-sitter chunking lives in ./treeSitterChunker.ts; this module is the
+// public entry point and the fixed-window fallback.
 
 import { createHash } from 'node:crypto'
+import path from 'node:path'
+import { isTreeSitterSupported, treeSitterChunk } from './treeSitterChunker.js'
 
 export type RawChunk = {
   startLine: number
@@ -17,6 +23,17 @@ export type ChunkOptions = {
 }
 
 const DEFAULT_OPTS: ChunkOptions = { linesPerChunk: 40, overlapLines: 4 }
+
+export async function chunkFileForIndex(filePath: string, content: string): Promise<RawChunk[]> {
+  const ext = path.extname(filePath)
+  if (isTreeSitterSupported(ext)) {
+    const tsChunks = await treeSitterChunk(content, ext)
+    if (tsChunks && tsChunks.length > 0) return tsChunks
+    // Parse failed or returned empty — fall through to fixed-window so we
+    // still get retrieval coverage on the file.
+  }
+  return chunkFile(content)
+}
 
 export function chunkFile(content: string, opts: Partial<ChunkOptions> = {}): RawChunk[] {
   const { linesPerChunk, overlapLines } = { ...DEFAULT_OPTS, ...opts }

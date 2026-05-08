@@ -9,7 +9,7 @@ import chokidar, { type FSWatcher } from 'chokidar'
 import ignoreFactory, { type Ignore } from 'ignore'
 import type { Provider } from '../providers/types.js'
 import type { Chunk, RagStore } from './store.js'
-import { chunkFile, hashContent } from './chunker.js'
+import { chunkFileForIndex, hashContent } from './chunker.js'
 
 const ignoreFn = ignoreFactory as unknown as () => Ignore
 
@@ -109,7 +109,7 @@ export class RagWatcher {
     if (stat.size > MAX_FILE_BYTES) return
     const content = await fs.readFile(fullPath, 'utf8')
 
-    const raw = chunkFile(content)
+    const raw = await chunkFileForIndex(rel, content)
     if (raw.length === 0) {
       this.opts.store.removeFile(rel)
       return

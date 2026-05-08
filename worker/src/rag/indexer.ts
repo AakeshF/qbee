@@ -12,7 +12,7 @@ import type { Ignore } from 'ignore'
 const ignoreFactory = ignoreModule as unknown as () => Ignore
 import type { Provider } from '../providers/types.js'
 import type { Chunk, RagStore } from './store.js'
-import { chunkFile, hashContent } from './chunker.js'
+import { chunkFileForIndex, hashContent } from './chunker.js'
 
 const HARD_SKIP = new Set(['node_modules', '.git', '.qbee', 'dist', 'build', 'out', '.next', '.cache', '.parcel-cache'])
 const TEXT_EXTS = new Set([
@@ -73,7 +73,7 @@ export async function* indexWorkspace(opts: IndexOptions): AsyncIterable<IndexPr
       continue
     }
 
-    const raw = chunkFile(content)
+    const raw = await chunkFileForIndex(filePath, content)
     if (raw.length === 0) continue
 
     // Embed in fixed-size batches so we don't blow up on huge files.

@@ -103,6 +103,12 @@ importers:
       sqlite-vec:
         specifier: ^0.1.5
         version: 0.1.9
+      tree-sitter-wasms:
+        specifier: ^0.1
+        version: 0.1.13
+      web-tree-sitter:
+        specifier: ~0.22
+        version: 0.22.6
       zod:
         specifier: ^3.23.0
         version: 3.25.76
@@ -1926,6 +1932,9 @@ packages:
   tr46@0.0.3:
     resolution: {integrity: sha512-N3WMsuqV66lT30CrXNbEjx4GEwlow3v6rr4mCcv6prnfwhS01rkgyFdjPNBYd9br7LpXV1+Emh01fHnq2Gdgrw==}
 
+  tree-sitter-wasms@0.1.13:
+    resolution: {integrity: sha512-wT+cR6DwaIz80/vho3AvSF0N4txuNx/5bcRKoXouOfClpxh/qqrF4URNLQXbbt8MaAxeksZcZd1j8gcGjc+QxQ==}
+
   trim-lines@3.0.1:
     resolution: {integrity: sha512-kRj8B+YHZCc9kQYdWfJB2/oUl9rA99qbowYYBtr4ui4mZyAQ2JpvVBd/6U2YloATfqBhBTSMhTpgBHtU0Mf3Rg==}
 
@@ -2051,6 +2060,9 @@ packages:
   web-streams-polyfill@4.0.0-beta.3:
     resolution: {integrity: sha512-QW95TCTaHmsYfHDybGMwO5IJIM93I/6vTRk+daHTWFPhwh+C8Cg7j7XyKrwrj8Ib6vYXe0ocYNrmzY4xAAN6ug==}
     engines: {node: '>= 14'}
+
+  web-tree-sitter@0.22.6:
+    resolution: {integrity: sha512-hS87TH71Zd6mGAmYCvlgxeGDjqd9GTeqXNqTT+u0Gs51uIozNIaaq/kUAbV/Zf56jb2ZOyG8BxZs2GG9wbLi6Q==}
 
   webidl-conversions@3.0.1:
     resolution: {integrity: sha512-2JAn3z8AR6rjK8Sm8orRC0h/bcl/DqL7tRPdGZ4I1CjdF+EaMLmYxBHyXuKL849eucPFhvBoxMsflfOb8kxaeQ==}
@@ -3999,6 +4011,8 @@ snapshots:
 
   tr46@0.0.3: {}
 
+  tree-sitter-wasms@0.1.13: {}
+
   trim-lines@3.0.1: {}
 
   trough@2.2.0: {}
@@ -4139,6 +4153,8 @@ snapshots:
       - terser
 
   web-streams-polyfill@4.0.0-beta.3: {}
+
+  web-tree-sitter@0.22.6: {}
 
   webidl-conversions@3.0.1: {}
 
