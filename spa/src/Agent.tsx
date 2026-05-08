@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentEvent, ChatMessage, EditorContext, ProviderConfig } from '@qbee/shared'
 import { Markdown } from './Markdown.js'
+import { DEFAULT_PRESETS, resolveProvider } from './presets.js'
 
 type DiffStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'rejected'
 
@@ -13,17 +14,45 @@ type Item =
   | { kind: 'error'; message: string }
   | { kind: 'done'; reason: string }
 
-type Props = { auth: string; provider: ProviderConfig; workspaceRoot: string; editorContext?: EditorContext }
+type Props = { auth: string; workspaceRoot: string; editorContext?: EditorContext }
 
-export function Agent({ auth, provider, workspaceRoot, editorContext }: Props) {
+export function Agent({ auth, workspaceRoot, editorContext }: Props) {
   const [input, setInput] = useState('')
   const [items, setItems] = useState<Item[]>([])
   const [busy, setBusy] = useState(false)
   // Persistent conversation across runs. Each run appends the user turn + the
   // assistant's TEXT response (without tool blocks). Tool history is per-run only.
   const [conversation, setConversation] = useState<ChatMessage[]>([])
+  // Independent provider/model selection — agent ≠ chat. Storage keys are
+  // distinct from the chat keys (qbee.presetIdx.v1 / qbee.model.v1) so each
+  // panel persists on its own.
+  const [presetIdx, setPresetIdx] = useState<number>(() => {
+    const stored = Number(localStorage.getItem('qbee.agent.presetIdx.v1') ?? '1')
+    return Number.isFinite(stored) && stored >= 0 && stored < DEFAULT_PRESETS.length ? stored : 1
+  })
+  const [model, setModel] = useState<string>(() => {
+    return localStorage.getItem('qbee.agent.model.v1') ?? DEFAULT_PRESETS[1]!.config.model
+  })
+  const provider: ProviderConfig = resolveProvider(presetIdx, model)
   const abortRef = useRef<AbortController | null>(null)
   const listRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    localStorage.setItem('qbee.agent.presetIdx.v1', String(presetIdx))
+  }, [presetIdx])
+  useEffect(() => {
+    localStorage.setItem('qbee.agent.model.v1', model)
+  }, [model])
+  // Match App.tsx behavior: switching the preset retunes the model field unless
+  // the user has explicitly typed one. Track the previous preset so initial
+  // restore-from-storage doesn't stomp the saved model.
+  const prevPresetRef = useRef(presetIdx)
+  useEffect(() => {
+    if (prevPresetRef.current !== presetIdx) {
+      setModel(DEFAULT_PRESETS[presetIdx]!.config.model)
+      prevPresetRef.current = presetIdx
+    }
+  }, [presetIdx])
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })
@@ -181,6 +210,24 @@ export function Agent({ auth, provider, workspaceRoot, editorContext }: Props) {
   return (
     <div style={styles.root}>
       <div style={styles.subheader}>
+        <select
+          style={styles.presetSelect}
+          value={presetIdx}
+          onChange={(e) => setPresetIdx(Number(e.target.value))}
+          disabled={busy}
+          title="Provider preset for the agent (independent from chat)"
+        >
+          {DEFAULT_PRESETS.map((p, i) => (
+            <option key={i} value={i}>{p.label}</option>
+          ))}
+        </select>
+        <input
+          style={styles.modelInput}
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          disabled={busy}
+          title="Model for the agent"
+        />
         <span style={styles.turnCount}>
           turns: {conversation.length / 2 | 0}
         </span>
@@ -361,7 +408,9 @@ async function* parseSSE<T>(body: ReadableStream<Uint8Array>): AsyncIterable<T> 
 const styles: Record<string, React.CSSProperties> = {
   root: { display: 'flex', flexDirection: 'column', height: '100%' },
   subheader: { display: 'flex', alignItems: 'center', gap: 6, padding: '4px 12px', borderBottom: '1px solid #2a2a2a', fontSize: 11, color: '#888' },
-  turnCount: { fontFamily: 'monospace', flex: 1 },
+  presetSelect: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '2px 6px', borderRadius: 3, fontSize: 11 },
+  modelInput: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '2px 6px', borderRadius: 3, fontSize: 11, fontFamily: 'monospace', width: 140 },
+  turnCount: { fontFamily: 'monospace', flex: 1, marginLeft: 6 },
   clearBtn: { background: 'transparent', border: '1px solid #444', color: '#aaa', padding: '2px 8px', borderRadius: 3, fontSize: 10, cursor: 'pointer' },
   list: { flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 6 },
   hint: { opacity: 0.5, fontSize: 13, lineHeight: 1.5 },

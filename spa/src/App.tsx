@@ -3,6 +3,7 @@ import type { ChatEvent, ChatMessage, EditorContext, FsReadResponse, ProviderCon
 import { Agent } from './Agent.js'
 import { Markdown } from './Markdown.js'
 import { Settings, loadEmbeddingProvider, pushSecretsToWorker } from './Settings.js'
+import { DEFAULT_PRESETS } from './presets.js'
 
 type Msg = ChatMessage & { id: string }
 
@@ -15,19 +16,6 @@ const DEFAULT_EMBEDDING_PROVIDER: ProviderConfig = {
   model: 'nomic-embed-text',
   baseUrl: 'http://127.0.0.1:11434/v1',
 }
-
-type ProviderPreset = {
-  label: string
-  config: ProviderConfig
-}
-
-// Defaults are picked to "just work" with common local + cloud setups.
-// The user can edit model strings inline; the apiKeyRef is the env var name the worker reads.
-const DEFAULT_PRESETS: ProviderPreset[] = [
-  { label: 'Ollama (local)', config: { id: 'openai-compatible', model: 'qwen2.5-coder:7b', baseUrl: 'http://127.0.0.1:11434/v1' } },
-  { label: 'Anthropic Claude', config: { id: 'anthropic', model: 'claude-sonnet-4-5', apiKeyRef: 'ANTHROPIC_API_KEY' } },
-  { label: 'Google Gemini', config: { id: 'gemini', model: 'gemini-2.0-flash', apiKeyRef: 'GEMINI_API_KEY' } },
-]
 
 export function App() {
   const [auth, setAuth] = useState('dev')
@@ -280,8 +268,6 @@ export function App() {
 
   const cancel = () => abortRef.current?.abort()
 
-  const currentProvider: ProviderConfig = { ...DEFAULT_PRESETS[presetIdx]!.config, model }
-
   return (
     <div style={styles.root}>
       <header style={styles.header}>
@@ -308,7 +294,7 @@ export function App() {
       {tab === 'settings' ? (
         <Settings auth={auth} embeddingProvider={embeddingProvider} setEmbeddingProvider={setEmbeddingProvider} onClose={() => setTab('chat')} />
       ) : tab === 'agent' ? (
-        <Agent auth={auth} provider={currentProvider} workspaceRoot={workspaceRoot} {...(editorContext ? { editorContext } : {})} />
+        <Agent auth={auth} workspaceRoot={workspaceRoot} {...(editorContext ? { editorContext } : {})} />
       ) : (
       <>
       <main ref={listRef as React.RefObject<HTMLElement>} style={styles.list}>
