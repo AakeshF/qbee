@@ -44,15 +44,20 @@ spawn_worker() {
 # Supervisor loop: respawn the worker if it exits while the editor is still
 # running. Bounded — at most 5 restarts in any 30s window — so a perpetually
 # crashing worker doesn't burn CPU or fill the log.
+#
+# We can't use `wait $WORKER_PID` here because this function is run as a
+# backgrounded subshell (`supervise_worker &`) and bash's `wait` only works on
+# direct children of the calling shell. The worker was forked by the parent
+# shell, so it's not a child of the subshell — `wait` would return 127
+# immediately with "not a child" and we'd thrash. Poll `kill -0` instead.
 supervise_worker() {
 	local restarts=()
 	local backoff_ms=500
 	while true; do
-		if ! wait "$WORKER_PID" 2>/dev/null; then
-			# `wait` returning non-zero usually means the worker exited with
-			# an error. Either way, decide whether to restart.
-			:
-		fi
+		# Block until the current worker is gone OR the editor exits.
+		while kill -0 "$WORKER_PID" 2>/dev/null && kill -0 "$EDITOR_PID" 2>/dev/null; do
+			sleep 1
+		done
 		# If the editor is gone, stop here.
 		if ! kill -0 "$EDITOR_PID" 2>/dev/null; then
 			return
