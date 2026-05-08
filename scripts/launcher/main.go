@@ -25,11 +25,19 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
-const readyTimeout = 5 * time.Second
+const (
+	readyTimeout         = 5 * time.Second
+	restartWindow        = 30 * time.Second
+	restartMaxInWindow   = 5
+	restartBackoffStart  = 500 * time.Millisecond
+	restartBackoffMaxMs  = 8000
+)
 
 func main() {
 	exe, err := os.Executable()
@@ -61,35 +69,19 @@ func main() {
 		fmt.Sprintf("QBEE_WORKER_URL=http://127.0.0.1:%d", port),
 	)
 
-	var workerCmd *exec.Cmd
+	supervisor := &workerSupervisor{layout: layout, env: env}
 	if layout.canRunWorker() {
-		workerCmd = exec.Command(layout.nodeBin, layout.serverScript)
-		workerCmd.Env = env
-		workerCmd.Dir = layout.workerDir
-		hideChildWindow(workerCmd)
-		// Capture stdout so we can wait for the {"type":"ready",...} line. The
-		// worker logs structured JSON; we just need to see one line that
-		// contains "ready".
-		stdoutPipe, _ := workerCmd.StdoutPipe()
-		workerCmd.Stderr = os.Stderr
-		if err := workerCmd.Start(); err != nil {
-			fmt.Fprintf(os.Stderr, "QBee: worker start failed: %v (continuing editor-only)\n", err)
-			workerCmd = nil
-		} else {
-			waitForReady(stdoutPipe, readyTimeout)
-		}
+		supervisor.start()
 	}
 
 	// Forward SIGINT/SIGTERM to the worker so Ctrl-C cleans up.
-	if workerCmd != nil {
-		sigs := make(chan os.Signal, 1)
-		signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-		go func() {
-			<-sigs
-			killWorker(workerCmd)
-			os.Exit(130)
-		}()
-	}
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		supervisor.stop()
+		os.Exit(130)
+	}()
 
 	editor := exec.Command(layout.editorExe, os.Args[1:]...)
 	editor.Env = env
@@ -98,9 +90,7 @@ func main() {
 	editor.Stderr = os.Stderr
 	runErr := editor.Run()
 
-	if workerCmd != nil {
-		killWorker(workerCmd)
-	}
+	supervisor.stop()
 
 	if runErr != nil {
 		if exitErr, ok := runErr.(*exec.ExitError); ok {
@@ -108,6 +98,143 @@ func main() {
 		}
 		fail("editor: %v", runErr)
 	}
+}
+
+// workerSupervisor spawns the worker and respawns it if it exits unexpectedly,
+// up to restartMaxInWindow restarts in any restartWindow. The port and auth
+// token in `env` are fixed at construction so the editor's QBEE_WORKER_URL
+// stays valid across restarts.
+type workerSupervisor struct {
+	layout layout
+	env    []string
+
+	mu        sync.Mutex
+	current   *exec.Cmd
+	stopping  atomic.Bool
+	wg        sync.WaitGroup
+	readyOnce sync.Once
+	readyCh   chan struct{}
+}
+
+func (s *workerSupervisor) start() {
+	s.readyCh = make(chan struct{})
+	s.wg.Add(1)
+	go s.loop()
+
+	// Block briefly for the FIRST ready handshake so the editor doesn't open
+	// before the worker is reachable. After that, restarts run silently.
+	select {
+	case <-s.readyCh:
+	case <-time.After(readyTimeout):
+	}
+}
+
+func (s *workerSupervisor) stop() {
+	if !s.stopping.CompareAndSwap(false, true) {
+		return
+	}
+	s.mu.Lock()
+	cmd := s.current
+	s.mu.Unlock()
+	if cmd != nil {
+		killWorker(cmd)
+	}
+	s.wg.Wait()
+}
+
+func (s *workerSupervisor) loop() {
+	defer s.wg.Done()
+	var restarts []time.Time
+	backoff := restartBackoffStart
+
+	for !s.stopping.Load() {
+		cmd := exec.Command(s.layout.nodeBin, s.layout.serverScript)
+		cmd.Env = s.env
+		cmd.Dir = s.layout.workerDir
+		hideChildWindow(cmd)
+		stdoutPipe, _ := cmd.StdoutPipe()
+		cmd.Stderr = os.Stderr
+
+		if err := cmd.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "QBee: worker start failed: %v\n", err)
+			s.mu.Lock()
+			s.current = nil
+			s.mu.Unlock()
+			if !s.shouldRestart(&restarts) {
+				return
+			}
+			s.sleepBackoff(&backoff)
+			continue
+		}
+
+		s.mu.Lock()
+		s.current = cmd
+		s.mu.Unlock()
+
+		// Drain stdout looking for ready, then keep draining until exit.
+		go waitForReady(stdoutPipe, readyTimeout, func() {
+			s.readyOnce.Do(func() { close(s.readyCh) })
+		})
+
+		err := cmd.Wait()
+		if s.stopping.Load() {
+			return
+		}
+		// Worker died on us. Decide whether to retry.
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "QBee: worker exited: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "QBee: worker exited cleanly; restarting\n")
+		}
+		if !s.shouldRestart(&restarts) {
+			fmt.Fprintf(os.Stderr, "QBee: worker restart budget exhausted; giving up\n")
+			return
+		}
+		s.sleepBackoff(&backoff)
+	}
+}
+
+// shouldRestart drops timestamps older than restartWindow, then returns true
+// iff appending a new one would stay within restartMaxInWindow.
+func (s *workerSupervisor) shouldRestart(restarts *[]time.Time) bool {
+	cutoff := time.Now().Add(-restartWindow)
+	kept := (*restarts)[:0]
+	for _, t := range *restarts {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	*restarts = kept
+	if len(*restarts) >= restartMaxInWindow {
+		return false
+	}
+	*restarts = append(*restarts, time.Now())
+	return true
+}
+
+func (s *workerSupervisor) sleepBackoff(backoff *time.Duration) {
+	// Don't sleep if we've been told to stop.
+	select {
+	case <-time.After(*backoff):
+	case <-s.stopChan():
+		return
+	}
+	next := *backoff * 2
+	if next > time.Duration(restartBackoffMaxMs)*time.Millisecond {
+		next = time.Duration(restartBackoffMaxMs) * time.Millisecond
+	}
+	*backoff = next
+}
+
+func (s *workerSupervisor) stopChan() <-chan struct{} {
+	// Cheap check via a polled atomic: if stopping is set, return a closed chan.
+	if s.stopping.Load() {
+		c := make(chan struct{})
+		close(c)
+		return c
+	}
+	// Otherwise return a never-firing channel — sleep runs to completion.
+	return make(chan struct{})
 }
 
 type layout struct {
@@ -242,9 +369,10 @@ func randomToken(n int) (string, error) {
 }
 
 // waitForReady consumes the worker's stdout until it sees a "ready" line or
-// timeout elapses. Either way it then drains stdout in a goroutine so the
-// worker's pipe buffer doesn't fill and block its writes.
-func waitForReady(out io.ReadCloser, timeout time.Duration) {
+// timeout elapses. Either way it then drains stdout so the worker's pipe
+// buffer doesn't fill and block its writes. onReady is called once when ready
+// is observed (or never, on timeout).
+func waitForReady(out io.ReadCloser, timeout time.Duration, onReady func()) {
 	if out == nil {
 		return
 	}
@@ -254,6 +382,9 @@ func waitForReady(out io.ReadCloser, timeout time.Duration) {
 		for scanner.Scan() {
 			line := scanner.Text()
 			if strings.Contains(line, `"type":"ready"`) {
+				if onReady != nil {
+					onReady()
+				}
 				close(done)
 				break
 			}

@@ -13,12 +13,18 @@
 #   3. Wait for the worker's {"type":"ready"} stdout handshake
 #   4. Launch the editor with QBEE_WORKER_URL + QBEE_WORKER_AUTH set so the sidebar webview
 #      points at the worker
-#   5. On editor exit, terminate the worker
+#   5. Supervise the worker — restart it on unexpected exit (up to 5 times in
+#      30s). The port + auth stay fixed so the editor's QBEE_WORKER_URL keeps
+#      working across restarts.
+#   6. On editor exit, terminate the worker + supervisor
 set -e
 
 HERE="$(dirname "$(readlink -f "${0}")")"
 WORKER_DIR="${HERE}/qbee-worker"
 SPA_DIR="${HERE}/qbee-spa"
+WORKER_LOG="/tmp/qbee-worker-$$.log"
+SUPERVISOR_PID=""
+WORKER_PID=""
 
 # Free-port picker: ask Node to bind to port 0 and report what it got.
 pick_port() {
@@ -28,6 +34,51 @@ pick_port() {
 # Cryptographically reasonable random token. /dev/urandom is universal.
 random_token() {
 	head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24
+}
+
+spawn_worker() {
+	"$NODE_BIN" "$WORKER_DIR/server.cjs" >>"$WORKER_LOG" 2>&1 &
+	WORKER_PID=$!
+}
+
+# Supervisor loop: respawn the worker if it exits while the editor is still
+# running. Bounded — at most 5 restarts in any 30s window — so a perpetually
+# crashing worker doesn't burn CPU or fill the log.
+supervise_worker() {
+	local restarts=()
+	local backoff_ms=500
+	while true; do
+		if ! wait "$WORKER_PID" 2>/dev/null; then
+			# `wait` returning non-zero usually means the worker exited with
+			# an error. Either way, decide whether to restart.
+			:
+		fi
+		# If the editor is gone, stop here.
+		if ! kill -0 "$EDITOR_PID" 2>/dev/null; then
+			return
+		fi
+		# Drop stale entries (>30s old).
+		local now
+		now=$(date +%s)
+		local cutoff=$((now - 30))
+		local kept=()
+		for t in "${restarts[@]}"; do
+			if [ "$t" -gt "$cutoff" ]; then kept+=("$t"); fi
+		done
+		restarts=("${kept[@]}")
+		if [ "${#restarts[@]}" -ge 5 ]; then
+			echo "AppRun: worker restart budget exhausted; giving up" >&2
+			return
+		fi
+		restarts+=("$now")
+		sleep "$(awk "BEGIN {print $backoff_ms / 1000}")"
+		# Exponential up to 8s.
+		backoff_ms=$(( backoff_ms * 2 ))
+		if [ "$backoff_ms" -gt 8000 ]; then backoff_ms=8000; fi
+
+		echo "AppRun: respawning worker" >&2
+		spawn_worker
+	done
 }
 
 # If we don't have a bundled worker (e.g. the user ran scripts/build-appimage.sh
@@ -51,21 +102,13 @@ if [ -d "$WORKER_DIR" ] && [ -f "$WORKER_DIR/server.cjs" ]; then
 		export QBEE_SPA_DIST="$SPA_DIR"
 		export QBEE_WORKER_URL="http://127.0.0.1:${QBEE_WORKER_PORT}"
 
-		"$NODE_BIN" "$WORKER_DIR/server.cjs" >/tmp/qbee-worker-$$.log 2>&1 &
-		WORKER_PID=$!
-
-		# Trap so the worker dies with the editor (and with this script on signal).
-		cleanup() {
-			if kill -0 "$WORKER_PID" 2>/dev/null; then
-				kill "$WORKER_PID" 2>/dev/null || true
-			fi
-		}
-		trap cleanup EXIT INT TERM
+		: > "$WORKER_LOG"
+		spawn_worker
 
 		# Wait up to 5s for the worker's ready handshake. If it never comes, log and
 		# continue — the editor still works without AI.
 		for _ in $(seq 50); do
-			if grep -q '"type":"ready"' /tmp/qbee-worker-$$.log 2>/dev/null; then
+			if grep -q '"type":"ready"' "$WORKER_LOG" 2>/dev/null; then
 				break
 			fi
 			sleep 0.1
@@ -73,4 +116,34 @@ if [ -d "$WORKER_DIR" ] && [ -f "$WORKER_DIR/server.cjs" ]; then
 	fi
 fi
 
-exec "${HERE}/qbee" "$@"
+# Run the editor as a child so we can clean up when it exits. (Cannot use
+# `exec` here because we need the surrounding shell alive to kill the
+# supervisor + worker on editor exit.)
+"${HERE}/qbee" "$@" &
+EDITOR_PID=$!
+
+# Trap so the worker + supervisor die with the editor (and with this script
+# on signal). EXIT covers normal exit; INT/TERM cover Ctrl-C / kill.
+cleanup() {
+	if [ -n "$SUPERVISOR_PID" ] && kill -0 "$SUPERVISOR_PID" 2>/dev/null; then
+		kill "$SUPERVISOR_PID" 2>/dev/null || true
+	fi
+	if [ -n "$WORKER_PID" ] && kill -0 "$WORKER_PID" 2>/dev/null; then
+		kill "$WORKER_PID" 2>/dev/null || true
+	fi
+}
+trap cleanup EXIT INT TERM
+
+# Start the supervisor in the background AFTER the editor is up, so the wait
+# call sees a valid worker pid.
+if [ -n "$WORKER_PID" ]; then
+	supervise_worker &
+	SUPERVISOR_PID=$!
+fi
+
+# Block on the editor; surface its exit code.
+set +e
+wait "$EDITOR_PID"
+EDITOR_EXIT=$?
+set -e
+exit "$EDITOR_EXIT"
