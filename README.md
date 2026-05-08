@@ -1,54 +1,82 @@
 # QBee
 
-A Linux-first, open-source AI code editor: fork of VSCode with first-class AI plumbing. Bring your own model — local (Ollama, LM Studio, llama.cpp, vLLM), Anthropic Claude, or Google Gemini — and switch per conversation.
+An open-source AI code editor: fork of VSCode with first-class AI plumbing. Bring your own model — local (Ollama, LM Studio, llama.cpp, vLLM), Anthropic Claude, or Google Gemini — and switch per conversation.
 
-> **Status:** v0.2.1. AppImage releases for Linux x64 + arm64. Roadmap to v1.0 in [`docs/02-Phases/Roadmap-v1.0.md`](docs/02-Phases/Roadmap-v1.0.md).
+> **Status:** v0.4.4. Cross-platform releases for Linux (x64, arm64), Windows (x64), and macOS Apple Silicon. macOS Intel is on the roadmap. Full plan: [`docs/02-Phases/Roadmap-v1.0.md`](docs/02-Phases/Roadmap-v1.0.md).
 
-## What's in v0.2.1
+## What's in v0.4.4
 
 - **Sidebar chat** with provider preset picker, streaming markdown + code-block highlighting, `@codebase <query>` mention that retrieves top-K workspace chunks via hybrid RAG and prepends them as context.
 - **Agent panel** with a ReAct loop: `read_file` / `list_dir` / `grep` / `write_file` (diff-only). Diffs render with Apply / Reject buttons; Apply writes via VSCode's `WorkspaceEdit` (no direct disk writes from the worker).
 - **Inline FIM completions** as you type — debounced, LRU-cached, configurable per language. Works with any OpenAI-compatible endpoint that speaks FIM tokens (Qwen2.5-Coder, DeepSeek-Coder, Codestral, StarCoder2 templates auto-detected).
 - **Hybrid RAG** over the workspace: `better-sqlite3` + `sqlite-vec` + FTS5 with reciprocal-rank fusion. Incremental reindex via `chokidar` — file saves are reflected in retrieval within ~2s.
-- **Self-contained AppImage** — editor + bundled SPA + bundled worker + native deps. No external services to install (BYOM at runtime).
+- **Cross-platform packaging** — Linux AppImage, Windows portable zip, macOS .app bundle (.dmg + .zip). Each ships the editor + bundled SPA + bundled worker + native deps. No external services to install (BYOM at runtime).
+- **Provider preset + model selection persisted** between sessions (localStorage).
 - **In-app updater** — `QBee: Check for Updates` command + a background check that surfaces a release notification 10s after launch.
 - **Open VSX extension marketplace**, telemetry off.
 
 ## Install
 
-### Linux x64 / arm64
+All downloads live on the [latest release page](https://github.com/AakeshF/qbee/releases/latest). Each artifact has a sibling `.sha256` for verification.
 
-Download the latest AppImage from [Releases](https://github.com/AakeshF/qbee/releases/latest):
+### Linux (x86_64 / aarch64)
 
 ```sh
-curl -LO https://github.com/AakeshF/qbee/releases/download/v0.2.1/QBee-0.2.1-x86_64.AppImage
-chmod +x QBee-0.2.1-x86_64.AppImage
-./QBee-0.2.1-x86_64.AppImage
+curl -LO https://github.com/AakeshF/qbee/releases/download/v0.4.4/QBee-0.4.4-x86_64.AppImage
+chmod +x QBee-0.4.4-x86_64.AppImage
+./QBee-0.4.4-x86_64.AppImage
 ```
+
+For arm64, swap `x86_64` for `aarch64`.
 
 Verify the SHA-256:
 
 ```sh
-curl -L https://github.com/AakeshF/qbee/releases/download/v0.2.1/QBee-0.2.1-x86_64.AppImage.sha256
-sha256sum -c QBee-0.2.1-x86_64.AppImage.sha256
+curl -LO https://github.com/AakeshF/qbee/releases/download/v0.4.4/QBee-0.4.4-x86_64.AppImage.sha256
+sha256sum -c QBee-0.4.4-x86_64.AppImage.sha256
 ```
-
-(GPG-signed releases come with v0.4 — see [roadmap](docs/02-Phases/Roadmap-v1.0.md).)
 
 **Runtime requirement:** `libfuse2` is needed for the AppImage runtime.
 - Ubuntu 22.04+: `sudo apt install libfuse2t64`
 - Arch / CachyOS: present by default
 
+### Windows (x64)
+
+Download [`QBee-0.4.4-x64-win.zip`](https://github.com/AakeshF/qbee/releases/download/v0.4.4/QBee-0.4.4-x64-win.zip), unzip anywhere, and run `QBee.exe` at the root of the extracted folder. The launcher is a small Go binary that boots the bundled worker before opening the editor — no console window flashes.
+
+It's a portable zip, no installer. Pin `QBee.exe` to your Start menu / taskbar if you want a launcher.
+
+### macOS (Apple Silicon)
+
+Download [`QBee-0.4.4-arm64-mac.dmg`](https://github.com/AakeshF/qbee/releases/download/v0.4.4/QBee-0.4.4-arm64-mac.dmg), open it, drag `QBee.app` to `/Applications`. (A `-arm64-mac.zip` is also available for users who prefer that.)
+
+The build is unsigned, so the first launch needs **right-click → Open** to bypass Gatekeeper. macOS will remember the exception after that.
+
+> macOS Intel (x86_64) is not yet shipped — GitHub Actions' free Intel runner couldn't be scheduled in time. Intel Mac users on Apple Silicon machines via Rosetta should use the arm64 build; otherwise wait for a future release.
+
+(GPG-signed Linux releases land via the `GPG_PRIVATE_KEY` workflow secret — see [roadmap](docs/02-Phases/Roadmap-v1.0.md). Code-signed Windows / macOS releases are post-v1.0.)
+
 ### First-run setup
 
-QBee reads provider API keys from the worker's environment for now (settings UI lands in v0.3). Two options:
+QBee reads provider API keys from the worker's environment for now. Two options:
 
-**Local model (no API key needed):** install Ollama or LM Studio, run a model. The chat tab's "Ollama (local)" preset points at `127.0.0.1:11434` by default; the model field is editable.
+**Local model (no API key needed):** install Ollama or LM Studio, run a model. The chat tab's "Ollama (local)" preset points at `127.0.0.1:11434` by default; the model field is editable, and your selection is remembered between sessions.
 
-**Anthropic / Gemini:** export keys before launching:
+**Anthropic / Gemini:** set the keys in the environment before launching:
 
 ```sh
-ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... ./QBee-0.2.1-x86_64.AppImage
+# Linux
+ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... ./QBee-0.4.4-x86_64.AppImage
+```
+
+```powershell
+# Windows (PowerShell)
+$env:ANTHROPIC_API_KEY="sk-ant-..."; $env:GEMINI_API_KEY="..."; .\QBee.exe
+```
+
+```sh
+# macOS
+ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... open -a QBee
 ```
 
 Then pick a preset in the chat tab's header.
@@ -85,20 +113,20 @@ Node 22.x is required by upstream VSCode (`editor/.nvmrc`). `tmux-dev.sh` auto-p
 The release pipeline is tag-driven:
 
 ```sh
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.4.5
+git push origin v0.4.5
 ```
 
-CI (`.github/workflows/release.yml`) builds AppImages for x64 + arm64, computes SHA-256, and uploads everything to a GitHub Release. GPG signing is wired but dormant until you set the `GPG_PRIVATE_KEY` repo secret.
+CI (`.github/workflows/release.yml`) builds Linux AppImages (x64 + arm64), a Windows portable zip, and a macOS .app bundle (.dmg + .zip), computes SHA-256, and uploads everything to a GitHub Release. macOS Intel is opt-in / best-effort — it can't block the release. GPG signing is wired but dormant until you set the `GPG_PRIVATE_KEY` repo secret.
 
-Local dry-run:
+Local dry-run (Linux):
 
 ```sh
-ARCH=x64 VERSION=0.2.2 ./scripts/build-appimage.sh
-# → .build/dist/QBee-0.2.2-x86_64.AppImage (+ .sha256)
+ARCH=x64 VERSION=0.4.5 ./scripts/build-appimage.sh
+# → .build/dist/QBee-0.4.5-x86_64.AppImage (+ .sha256)
 ```
 
-The first build is slow (~15-30 min for upstream's gulp pass); subsequent builds are incremental.
+Equivalent scripts: `scripts/build-windows.sh` and `scripts/build-macos.sh`. The first build is slow (~15-30 min for upstream's gulp pass); subsequent builds are incremental.
 
 ## Architecture
 
@@ -108,7 +136,7 @@ Three processes. Single document at [`docs/01-Architecture.md`](docs/01-Architec
 editor (Electron renderer, sandboxed) ↔ webview iframe → SPA → /api/* → worker
 ```
 
-The worker is the HTTP host: it serves the SPA at `/` and the API at `/api/*`. In the AppImage, `AppRun` spawns the bundled worker with `QBEE_SPA_DIST` pointing at the bundled SPA dist, picks a free port + random auth token, then `exec`s the editor with `QBEE_WORKER_URL` + `QBEE_WORKER_AUTH` set so the webview iframes the right URL.
+The worker is the HTTP host: it serves the SPA at `/` and the API at `/api/*`. On Linux, `AppRun` is the entry point; on Windows and macOS it's a small Go launcher (`QBee.exe` / `qbee-launcher` inside `Contents/MacOS/`). In all three, the launcher spawns the bundled worker with `QBEE_SPA_DIST` pointing at the bundled SPA dist, picks a free port + random auth token, then `exec`s the editor with `QBEE_WORKER_URL` + `QBEE_WORKER_AUTH` set so the webview iframes the right URL.
 
 Fork-only code lives entirely under `editor/src/vs/workbench/contrib/qbee/`. Two upstream files modified (`product.json` for branding + Open VSX, `workbench.desktop.main.ts` for one import line). All other AI features live in `contrib/qbee/` so upstream rebases stay cheap.
 
@@ -120,7 +148,7 @@ Fork-only code lives entirely under `editor/src/vs/workbench/contrib/qbee/`. Two
 | `spa/` | React + Vite + TypeScript AI panel. Vendored into the editor's `spa-dist/` at build time. |
 | `worker/` | Node + Fastify HTTP host. Provider adapters, agent ReAct loop, RAG store/chunker/indexer/retriever/watcher. |
 | `shared/` | Zod schemas + types shared between spa and worker. |
-| `scripts/` | `init-fork.sh`, `vendor-spa.sh`, `bundle-worker.sh`, `build-appimage.sh`, AppRun + .desktop template. |
+| `scripts/` | `init-fork.sh`, `vendor-spa.sh`, `bundle-worker.sh`, `build-{appimage,windows,macos}.sh`, Go launcher source under `launcher/`, AppRun + `.desktop` template. |
 | `docs/` | Obsidian vault — architecture, ADRs, phase notes, daily log, [v1.0 roadmap](docs/02-Phases/Roadmap-v1.0.md). |
 | `.github/workflows/release.yml` | Tag-triggered AppImage release. |
 
