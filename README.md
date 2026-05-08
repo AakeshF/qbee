@@ -2,7 +2,7 @@
 
 An open-source AI code editor: fork of VSCode with first-class AI plumbing. Bring your own model — local (Ollama, LM Studio, llama.cpp, vLLM), Anthropic Claude, or Google Gemini — and configure each function (chat, agent, inline completions, embeddings) independently.
 
-> **Status:** v0.5.5. Cross-platform releases for Linux (x64, arm64), Windows (x64), and macOS Apple Silicon. macOS Intel is not built — GitHub's free Intel runner pool is no longer reliable; use Linux x64 in a VM if you need Intel Mac support.
+> **Status:** v0.5.6. Cross-platform releases for Linux (x64, arm64), Windows (x64), and macOS Apple Silicon. macOS Intel is not built — GitHub's free Intel runner pool is no longer reliable; use Linux x64 in a VM if you need Intel Mac support.
 
 ## What's in v0.5
 
@@ -26,9 +26,9 @@ All downloads live on the [latest release page](https://github.com/AakeshF/qbee/
 ### Linux (x86_64 / aarch64)
 
 ```sh
-curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.5/QBee-0.5.5-x86_64.AppImage
-chmod +x QBee-0.5.5-x86_64.AppImage
-./QBee-0.5.5-x86_64.AppImage
+curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.6/QBee-0.5.6-x86_64.AppImage
+chmod +x QBee-0.5.6-x86_64.AppImage
+./QBee-0.5.6-x86_64.AppImage
 ```
 
 For arm64, swap `x86_64` for `aarch64`.
@@ -36,8 +36,8 @@ For arm64, swap `x86_64` for `aarch64`.
 Verify the SHA-256:
 
 ```sh
-curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.5/QBee-0.5.5-x86_64.AppImage.sha256
-sha256sum -c QBee-0.5.5-x86_64.AppImage.sha256
+curl -LO https://github.com/AakeshF/qbee/releases/download/v0.5.6/QBee-0.5.6-x86_64.AppImage.sha256
+sha256sum -c QBee-0.5.6-x86_64.AppImage.sha256
 ```
 
 **Runtime requirement:** `libfuse2` is needed for the AppImage runtime.
@@ -46,13 +46,13 @@ sha256sum -c QBee-0.5.5-x86_64.AppImage.sha256
 
 ### Windows (x64)
 
-Download [`QBee-0.5.5-x64-win.zip`](https://github.com/AakeshF/qbee/releases/download/v0.5.5/QBee-0.5.5-x64-win.zip), unzip anywhere, and run `QBee.exe` at the root of the extracted folder. The launcher is a small Go binary that boots the bundled worker before opening the editor — no console window flashes.
+Download [`QBee-0.5.6-x64-win.zip`](https://github.com/AakeshF/qbee/releases/download/v0.5.6/QBee-0.5.6-x64-win.zip), unzip anywhere, and run `QBee.exe` at the root of the extracted folder. The launcher is a small Go binary that boots the bundled worker before opening the editor — no console window flashes.
 
 It's a portable zip, no installer. Pin `QBee.exe` to your Start menu / taskbar if you want a launcher.
 
 ### macOS (Apple Silicon)
 
-Download [`QBee-0.5.5-arm64-mac.dmg`](https://github.com/AakeshF/qbee/releases/download/v0.5.5/QBee-0.5.5-arm64-mac.dmg), open it, drag `QBee.app` to `/Applications`. (A `-arm64-mac.zip` is also available for users who prefer that.)
+Download [`QBee-0.5.6-arm64-mac.dmg`](https://github.com/AakeshF/qbee/releases/download/v0.5.6/QBee-0.5.6-arm64-mac.dmg), open it, drag `QBee.app` to `/Applications`. (A `-arm64-mac.zip` is also available for users who prefer that.)
 
 The build is unsigned, so the first launch needs **right-click → Open** to bypass Gatekeeper. macOS will remember the exception after that.
 
@@ -116,8 +116,8 @@ CI (`.github/workflows/ci.yml`) gates every push + PR on the same two commands.
 Tag-driven:
 
 ```sh
-git tag v0.5.5
-git push origin v0.5.5
+git tag v0.5.6
+git push origin v0.5.6
 ```
 
 `.github/workflows/release.yml` builds Linux AppImages (x64 + arm64), a Windows portable zip with embedded `qbee.ico`, and a macOS .app bundle (.dmg + .zip) with embedded `qbee.icns`. Computes SHA-256, uploads everything to a GitHub Release. macOS Intel is best-effort — won't block the release. GPG signing wired but dormant.
@@ -126,7 +126,7 @@ Local dry-run (Linux):
 
 ```sh
 ARCH=x64 VERSION=0.5.2 ./scripts/build-appimage.sh
-# → .build/dist/QBee-0.5.5-x86_64.AppImage (+ .sha256)
+# → .build/dist/QBee-0.5.6-x86_64.AppImage (+ .sha256)
 ```
 
 Equivalent: `scripts/build-windows.sh` (cross-builds for Windows from any host) and `scripts/build-macos.sh` (macOS only). First build is slow (~15-30 min for upstream's gulp pass); subsequent builds are incremental.
