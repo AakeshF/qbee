@@ -1,16 +1,31 @@
-// Settings panel: API keys + RAG embedding endpoint. Keys persist via
-// localStorage (plaintext on the user's machine — same threat model as a
-// browser-stored token). On every load, the SPA pushes them to the worker
-// via /api/secrets/set so /api/chat etc. can find them.
+// Dashboard panel: per-function provider/model selection (chat + agent),
+// API keys, embedding endpoint, and quick actions. The visible identity of
+// the editor on first launch — see App.tsx's "qbee.welcomed.v1" flag for
+// how this becomes the default tab.
 //
-// v0.4 will replace localStorage with editor-side SecretStorage via the
-// existing postMessage bridge.
+// Cross-component sync: when the chat or agent provider/model changes here,
+// we dispatch a 'qbee-config-change' window event so App.tsx (chat header)
+// and Agent.tsx (agent picker) re-read their localStorage and update their
+// own pickers without remount.
+//
+// Threat model on API keys: localStorage is plaintext on the user's machine —
+// "browser-stored token". v1.0 migrates to editor-side SecretStorage.
 
 import { useEffect, useState } from 'react'
 import type { ProviderConfig } from '@qbee/shared'
+import { DEFAULT_PRESETS } from './presets.js'
 
 const STORAGE_KEY = 'qbee.secrets.v1'
 const EMBEDDING_KEY = 'qbee.embeddingProvider.v1'
+const CHAT_PRESET_KEY = 'qbee.presetIdx.v1'
+const CHAT_MODEL_KEY = 'qbee.model.v1'
+const AGENT_PRESET_KEY = 'qbee.agent.presetIdx.v1'
+const AGENT_MODEL_KEY = 'qbee.agent.model.v1'
+
+// Window event other panels listen to so they pick up dashboard edits without
+// a remount. The single event covers all scopes; subscribers re-read the keys
+// they care about.
+export const CONFIG_CHANGE_EVENT = 'qbee-config-change'
 
 type SecretMap = Record<string, string>
 
@@ -19,6 +34,9 @@ export type SettingsProps = {
   embeddingProvider: ProviderConfig
   setEmbeddingProvider: (cfg: ProviderConfig) => void
   onClose: () => void
+  onStartChat: () => void
+  onStartAgent: () => void
+  onStartIndex: () => void
 }
 
 export function loadSecrets(): SecretMap {
@@ -64,12 +82,47 @@ const KNOWN_KEYS = [
   { ref: 'OPENAI_API_KEY', label: 'OpenAI API key (or any OpenAI-compatible token)', hint: 'sk-…' },
 ]
 
-export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClose }: SettingsProps) {
+export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClose, onStartChat, onStartAgent, onStartIndex }: SettingsProps) {
   const [secrets, setSecrets] = useState<SecretMap>(() => loadSecrets())
   const [revealedKey, setRevealedKey] = useState<string | null>(null)
   const [embedBaseUrl, setEmbedBaseUrl] = useState(embeddingProvider.baseUrl ?? '')
   const [embedModel, setEmbedModel] = useState(embeddingProvider.model)
   const [savedNote, setSavedNote] = useState<string | null>(null)
+
+  // Per-function provider state. Read from localStorage; write through helpers
+  // that also dispatch CONFIG_CHANGE_EVENT so the chat and agent panels stay
+  // in sync without prop drilling.
+  const [chatPresetIdx, setChatPresetIdxState] = useState<number>(() => readPresetIdx(CHAT_PRESET_KEY, 0))
+  const [chatModel, setChatModelState] = useState<string>(() => readModel(CHAT_MODEL_KEY, DEFAULT_PRESETS[0]!.config.model))
+  const [agentPresetIdx, setAgentPresetIdxState] = useState<number>(() => readPresetIdx(AGENT_PRESET_KEY, 1))
+  const [agentModel, setAgentModelState] = useState<string>(() => readModel(AGENT_MODEL_KEY, DEFAULT_PRESETS[1]!.config.model))
+
+  const setChatPresetIdx = (idx: number) => {
+    setChatPresetIdxState(idx)
+    localStorage.setItem(CHAT_PRESET_KEY, String(idx))
+    const newModel = DEFAULT_PRESETS[idx]!.config.model
+    setChatModelState(newModel)
+    localStorage.setItem(CHAT_MODEL_KEY, newModel)
+    notifyConfigChange()
+  }
+  const setChatModel = (m: string) => {
+    setChatModelState(m)
+    localStorage.setItem(CHAT_MODEL_KEY, m)
+    notifyConfigChange()
+  }
+  const setAgentPresetIdx = (idx: number) => {
+    setAgentPresetIdxState(idx)
+    localStorage.setItem(AGENT_PRESET_KEY, String(idx))
+    const newModel = DEFAULT_PRESETS[idx]!.config.model
+    setAgentModelState(newModel)
+    localStorage.setItem(AGENT_MODEL_KEY, newModel)
+    notifyConfigChange()
+  }
+  const setAgentModel = (m: string) => {
+    setAgentModelState(m)
+    localStorage.setItem(AGENT_MODEL_KEY, m)
+    notifyConfigChange()
+  }
 
   const authHeader = () => ({ Authorization: `Basic ${btoa(`qbee:${auth}`)}` })
 
@@ -121,15 +174,48 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   return (
     <div style={styles.root}>
       <div style={styles.header}>
-        <span style={styles.title}>Settings</span>
+        <span style={styles.title}>Dashboard</span>
         <span style={styles.flex} />
         {savedNote && <span style={styles.saved}>{savedNote}</span>}
         <button style={styles.closeBtn} onClick={onClose}>Close</button>
       </div>
       <div style={styles.body}>
+
+        <section style={styles.quickActions}>
+          <button style={styles.actionBtn} onClick={onStartChat}>💬 Start a chat</button>
+          <button style={styles.actionBtn} onClick={onStartAgent}>🤖 Run an agent task</button>
+          <button style={styles.actionBtn} onClick={onStartIndex}>🔍 Index workspace (@codebase)</button>
+        </section>
+
+        <section style={styles.section}>
+          <div style={styles.sectionTitle}>Provider routing</div>
+          <div style={styles.sectionHint}>Configure each function independently. Pick one provider for chat, another for the agent, etc. Edits sync immediately to the chat header and agent picker.</div>
+
+          <div style={styles.providerRow}>
+            <div style={styles.providerLabel}>Chat</div>
+            <select style={styles.providerSelect} value={chatPresetIdx} onChange={(e) => setChatPresetIdx(Number(e.target.value))}>
+              {DEFAULT_PRESETS.map((p, i) => (<option key={i} value={i}>{p.label}</option>))}
+            </select>
+            <input style={styles.providerModel} value={chatModel} onChange={(e) => setChatModel(e.target.value)} placeholder="model" />
+          </div>
+
+          <div style={styles.providerRow}>
+            <div style={styles.providerLabel}>Agent</div>
+            <select style={styles.providerSelect} value={agentPresetIdx} onChange={(e) => setAgentPresetIdx(Number(e.target.value))}>
+              {DEFAULT_PRESETS.map((p, i) => (<option key={i} value={i}>{p.label}</option>))}
+            </select>
+            <input style={styles.providerModel} value={agentModel} onChange={(e) => setAgentModel(e.target.value)} placeholder="model" />
+          </div>
+
+          <div style={styles.providerRow}>
+            <div style={styles.providerLabel}>Inline FIM</div>
+            <div style={styles.providerNote}>Configured via VSCode settings: <code>qbee.inlineCompletions.*</code> — provider, model, baseUrl, maxTokens. Open Settings (Ctrl+,) and search "qbee".</div>
+          </div>
+        </section>
+
         <section style={styles.section}>
           <div style={styles.sectionTitle}>API keys</div>
-          <div style={styles.sectionHint}>Stored in your browser's localStorage and pushed to the worker. Cleared if you Clear All or wipe browser data. v0.4 moves these to the editor's SecretStorage.</div>
+          <div style={styles.sectionHint}>Stored in your browser's localStorage and pushed to the worker on every load. Cleared if you Clear All or wipe browser data.</div>
           {KNOWN_KEYS.map((k) => (
             <div key={k.ref} style={styles.row}>
               <label style={styles.label}>{k.label}</label>
@@ -170,6 +256,17 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   )
 }
 
+function readPresetIdx(key: string, fallback: number): number {
+  const stored = Number(localStorage.getItem(key) ?? String(fallback))
+  return Number.isFinite(stored) && stored >= 0 && stored < DEFAULT_PRESETS.length ? stored : fallback
+}
+function readModel(key: string, fallback: string): string {
+  return localStorage.getItem(key) ?? fallback
+}
+function notifyConfigChange(): void {
+  window.dispatchEvent(new Event(CONFIG_CHANGE_EVENT))
+}
+
 const styles: Record<string, React.CSSProperties> = {
   root: { display: 'flex', flexDirection: 'column', height: '100%' },
   header: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid #333' },
@@ -178,9 +275,16 @@ const styles: Record<string, React.CSSProperties> = {
   saved: { fontSize: 11, color: '#9eccaa' },
   closeBtn: { background: 'transparent', border: '1px solid #444', color: '#ddd', padding: '4px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer' },
   body: { flex: 1, overflowY: 'auto', padding: 16, display: 'flex', flexDirection: 'column', gap: 24 },
+  quickActions: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  actionBtn: { background: '#262d3a', border: '1px solid #3a4a6a', color: '#dde', padding: '8px 14px', borderRadius: 6, fontSize: 12, cursor: 'pointer', flex: '1 1 auto', textAlign: 'left' as const },
   section: { display: 'flex', flexDirection: 'column', gap: 8 },
   sectionTitle: { fontSize: 13, fontWeight: 600, color: '#ddd' },
   sectionHint: { fontSize: 11, color: '#888', lineHeight: 1.4 },
+  providerRow: { display: 'grid', gridTemplateColumns: '70px 1fr 1fr', gap: 8, alignItems: 'center' },
+  providerLabel: { fontSize: 11, color: '#aaa', fontWeight: 500 },
+  providerSelect: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '4px 8px', borderRadius: 4, fontSize: 11 },
+  providerModel: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '4px 8px', borderRadius: 4, fontSize: 11, fontFamily: 'monospace' },
+  providerNote: { fontSize: 11, color: '#888', gridColumn: 'span 2' },
   row: { display: 'flex', flexDirection: 'column', gap: 4 },
   label: { fontSize: 11, color: '#aaa' },
   input: { background: '#2a2a2a', border: '1px solid #444', color: '#ddd', padding: '6px 8px', borderRadius: 4, fontSize: 12, fontFamily: 'monospace', width: '100%', boxSizing: 'border-box' },

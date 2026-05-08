@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { AgentEvent, ChatMessage, EditorContext, ProviderConfig } from '@qbee/shared'
 import { Markdown } from './Markdown.js'
 import { DEFAULT_PRESETS, resolveProvider } from './presets.js'
+import { CONFIG_CHANGE_EVENT } from './Settings.js'
 
 type DiffStatus = 'pending' | 'applying' | 'applied' | 'failed' | 'rejected'
 
@@ -53,6 +54,21 @@ export function Agent({ auth, workspaceRoot, editorContext }: Props) {
       prevPresetRef.current = presetIdx
     }
   }, [presetIdx])
+
+  // Pick up edits made in the Dashboard (which writes localStorage directly).
+  useEffect(() => {
+    const onConfigChange = () => {
+      const storedIdx = Number(localStorage.getItem('qbee.agent.presetIdx.v1') ?? '1')
+      if (Number.isFinite(storedIdx) && storedIdx >= 0 && storedIdx < DEFAULT_PRESETS.length) {
+        prevPresetRef.current = storedIdx
+        setPresetIdx(storedIdx)
+      }
+      const storedModel = localStorage.getItem('qbee.agent.model.v1')
+      if (storedModel !== null) setModel(storedModel)
+    }
+    window.addEventListener(CONFIG_CHANGE_EVENT, onConfigChange)
+    return () => window.removeEventListener(CONFIG_CHANGE_EVENT, onConfigChange)
+  }, [])
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: 'smooth' })

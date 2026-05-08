@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ChatEvent, ChatMessage, EditorContext, FsReadResponse, ProviderConfig, RagSearchResponse, RagStatusResponse } from '@qbee/shared'
 import { Agent } from './Agent.js'
 import { Markdown } from './Markdown.js'
-import { Settings, loadEmbeddingProvider, pushSecretsToWorker } from './Settings.js'
+import { Settings, loadEmbeddingProvider, pushSecretsToWorker, CONFIG_CHANGE_EVENT } from './Settings.js'
 import { DEFAULT_PRESETS } from './presets.js'
 
 type Msg = ChatMessage & { id: string }
@@ -19,7 +19,12 @@ const DEFAULT_EMBEDDING_PROVIDER: ProviderConfig = {
 
 export function App() {
   const [auth, setAuth] = useState('dev')
-  const [tab, setTab] = useState<'chat' | 'agent' | 'settings'>('chat')
+  // First-launch users land on the Dashboard so they see the AI-first identity
+  // (provider routing, API keys, quick actions) instead of an empty chat box.
+  // Returning users land on chat — that's the daily-use surface.
+  const [tab, setTab] = useState<'chat' | 'agent' | 'settings'>(() => {
+    return localStorage.getItem('qbee.welcomed.v1') === '1' ? 'chat' : 'settings'
+  })
   // Restore preset + model from localStorage so launches don't reset to Ollama default.
   const [presetIdx, setPresetIdx] = useState<number>(() => {
     const stored = Number(localStorage.getItem('qbee.presetIdx.v1') ?? '0')
@@ -64,6 +69,22 @@ export function App() {
     }
     window.addEventListener('message', handler)
     return () => window.removeEventListener('message', handler)
+  }, [])
+
+  // The Dashboard panel writes chat preset/model directly to localStorage. Sync
+  // those edits back into our state so the chat header picker reflects them
+  // without a remount.
+  useEffect(() => {
+    const onConfigChange = () => {
+      const storedIdx = Number(localStorage.getItem('qbee.presetIdx.v1') ?? '0')
+      if (Number.isFinite(storedIdx) && storedIdx >= 0 && storedIdx < DEFAULT_PRESETS.length) {
+        setPresetIdx(storedIdx)
+      }
+      const storedModel = localStorage.getItem('qbee.model.v1')
+      if (storedModel !== null) setModel(storedModel)
+    }
+    window.addEventListener(CONFIG_CHANGE_EVENT, onConfigChange)
+    return () => window.removeEventListener(CONFIG_CHANGE_EVENT, onConfigChange)
   }, [])
 
   // Switching the preset resets the model to that preset's default unless the
@@ -268,13 +289,20 @@ export function App() {
 
   const cancel = () => abortRef.current?.abort()
 
+  // First-launch users land on Dashboard. As soon as they navigate anywhere,
+  // mark them as "welcomed" so subsequent launches default to chat.
+  const switchTab = (next: 'chat' | 'agent' | 'settings') => {
+    if (next !== 'settings') localStorage.setItem('qbee.welcomed.v1', '1')
+    setTab(next)
+  }
+
   return (
     <div style={styles.root}>
       <header style={styles.header}>
         <span style={styles.brand}>QBee</span>
-        <button style={tabStyle(tab === 'chat')} onClick={() => setTab('chat')}>chat</button>
-        <button style={tabStyle(tab === 'agent')} onClick={() => setTab('agent')}>agent</button>
-        <button style={tabStyle(tab === 'settings')} onClick={() => setTab('settings')}>settings</button>
+        <button style={tabStyle(tab === 'chat')} onClick={() => switchTab('chat')}>chat</button>
+        <button style={tabStyle(tab === 'agent')} onClick={() => switchTab('agent')}>agent</button>
+        <button style={tabStyle(tab === 'settings')} onClick={() => switchTab('settings')}>dashboard</button>
         <select style={styles.select} value={presetIdx} onChange={(e) => setPresetIdx(Number(e.target.value))} disabled={busy}>
           {DEFAULT_PRESETS.map((p, i) => (
             <option key={i} value={i}>
@@ -292,7 +320,15 @@ export function App() {
       </header>
       {indexProgress && <div style={styles.indexLine}>{indexProgress}</div>}
       {tab === 'settings' ? (
-        <Settings auth={auth} embeddingProvider={embeddingProvider} setEmbeddingProvider={setEmbeddingProvider} onClose={() => setTab('chat')} />
+        <Settings
+          auth={auth}
+          embeddingProvider={embeddingProvider}
+          setEmbeddingProvider={setEmbeddingProvider}
+          onClose={() => switchTab('chat')}
+          onStartChat={() => switchTab('chat')}
+          onStartAgent={() => switchTab('agent')}
+          onStartIndex={startIndex}
+        />
       ) : tab === 'agent' ? (
         <Agent auth={auth} workspaceRoot={workspaceRoot} {...(editorContext ? { editorContext } : {})} />
       ) : (
