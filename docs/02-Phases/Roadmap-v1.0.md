@@ -26,6 +26,8 @@ The plan from v0.5 onward earns the fork by shipping things you genuinely can't 
 
 | Differentiator | Lands in | Why a fork |
 |---|---|---|
+| **AI-first launch identity** — boot screen is a per-function provider dashboard (chat/agent/FIM/embedding), not the stock VSCode welcome | **v0.5** | Extensions can override start pages but never own the "this is what this product is" launch surface; that's chrome territory |
+| **IDE-aware chat + agent** — active editor, selection, cursor, and open tabs auto-injected into every prompt; selection is context without `@file:` typing | **v0.5** | Extensions can read editor state but the round-trip through the extension boundary is awkward and asymmetric; baking it into the editor's chat/agent flow makes it feel native |
 | **Embedded local LLM** — bundle llama.cpp + a small FIM model in the AppImage so first launch works zero-config | **v0.6** | Extensions can't ship a native runtime that survives uninstall/upgrade cleanly; the AppImage / .app / .exe is the boundary that lets us ship one binary that works |
 | **Native AI chrome** — Cmd+K inline edit with diff-as-ghost-text, multi-line completion, predictive next-cursor jumps | **v0.7** | Inline-edit and predictive-jump UX touches the editor's command/cursor layer below what extension API exposes; this is the single feature people associate with Cursor |
 | **Agent worktrees + domain tools** — every agent task in a git worktree, parallel runs, review-before-merge; agent has real tools (test runner, debugger, terminal-aware) | **v0.8** | Worktree management + debugger/test integration needs hooks deeper than the extension surface; this is what makes the agent useful for real work, not just file edits |
@@ -134,33 +136,63 @@ These all fold into **v0.5** below as the cleanup pass before the differentiatio
 
 ---
 
-## v0.5 — Reliability and the v0.4 cleanup pass
+## v0.5 — AI-first identity, IDE-aware agent, reliability
 
-**Theme:** stops feeling like a dev preview. Everything we promised in v0.3/v0.4 but didn't quite finish, plus the reliability fundamentals.
+**Theme:** the editor *feels* AI-native from the first launch, the agent knows what you're working on, and the foundations are solid enough to build the rest of the differentiation arc on top.
+
+Two headline items drive this milestone — both came directly from the v0.4.4 user feedback pass and are non-negotiable for v0.5 to be considered done.
+
+### Headline 1: AI-first launch dashboard
+
+Today's launch experience is "stock VSCode chrome — go discover the QBee sidebar — find the Settings sub-tab — paste keys." That's not what someone downloading an "AI code editor" expects. The visible identity of the editor should be AI-first from frame one.
+
+| Item | Notes |
+|---|---|
+| **AI dashboard as the launch surface** | Replace VSCode's "Get Started" welcome with a QBee dashboard. Per-function provider/model configuration in one place: chat, agent, inline FIM, embedding. Add a local model, paste an API key, switch the default per function — all visible from launch. |
+| **Per-function provider routing** | Today the chat preset drives chat *and* the agent. Split: each function has its own provider+model selection (chat / agent / FIM / embedding). User can run Anthropic for agent, local Qwen for FIM, Gemini for chat — without re-picking each turn. Persisted. |
+| **Local model picker** | "Add a local model" flow: detect Ollama / LM Studio running on localhost, list pulled models, one-click add. Or paste a custom OpenAI-compatible URL + model. Saves a named entry in the dashboard. (v0.6 adds the bundled-model option to this same picker.) |
+| **Quick actions row** | "Start a chat", "Run an agent task", "Index this workspace", "Check for updates" — top of dashboard, single-click. |
+| **"Always show this on launch" toggle** | Default on for new installs, off for power users. Reachable later via a top-level command. |
+
+### Headline 2: IDE-aware chat + agent
+
+Today the agent works workspace-blind: it knows the workspace root and that's it. To give it your selection, you copy-paste it. To tell it what file you're looking at, you type `@file:` mentions. The editor *knows* all of this and isn't sharing.
+
+| Item | Notes |
+|---|---|
+| **Editor → worker context bridge** | On every chat send and every agent run, the editor pushes: active editor URI, current selection (range + text), cursor position, and the list of open tabs. Worker forwards into the system prompt as a structured "current state" block. |
+| **Selection auto-context** | If a selection is active when the user sends a chat message, that selection is part of the prompt — no `@file:` needed. Visible in the chat UI as a chip showing the file + line range so the user knows what's being sent. |
+| **"Reference open tabs"** in chat | A chip near the input that shows currently open tabs; one click toggles whether they're sent as context. Default off, but discoverable. |
+| **Active-file awareness in agent** | Agent's system prompt includes "the user is currently looking at `path/to/file.ts:142`" so a prompt like "what's wrong here?" works without explicit file mentions. |
+| **Workspace symbol context (stretch)** | Pre-load a symbol summary (function/class names per open file) into the system prompt. Cheap context, big impact on "find me the X function" type queries. Can defer to v0.6 if scope-heavy. |
+
+### Reliability + carry-over from old v0.5
 
 | Item | Notes |
 |---|---|
 | **Tree-sitter chunking** | Replaces the fixed-window chunker. Function/class granularity per language; fallback to fixed-window for unsupported langs. Index format change → migration path needed before v1.0 stability commitments. |
 | **Checkpoint snapshots / undo** | Snapshot workspace under `.qbee/checkpoints/<timestamp>/` (hardlinks where possible) before each agent run. `qbee: undo last agent run` reverses every approved write. |
 | **`run_terminal` agent tool with per-command approval** | Confirmation modal in SPA: command displayed, user approves, output streams. "Always allow this command in this workspace" remembered. |
-| **Worker auto-restart on crash** | Supervisor in `contrib/qbee/electron-main/` (utility-process IPC) restarts worker up to N times in M seconds. AppRun / launcher today spawns once and lets it die. |
+| **Worker auto-restart on crash** | Supervisor in `contrib/qbee/electron-main/` (utility-process IPC) restarts worker up to N times in M seconds. |
 | **Index health surface** | "Indexing 45% complete (2,300/5,100 files)" in QBee status bar. Surface stuck-indexing, embedding-endpoint-down, dim-mismatch errors in the UI instead of silently failing. |
-| **AppImage in-place updater** | Promote "Check for Updates" from "links to release page" to "download → atomic replace → restart". AppImage spec supports this; Windows zip + macOS .app updaters are stretch (more design work). |
-| **GPG signing live** | Set `GPG_PRIVATE_KEY` repo secret. Every release ships `.asc` signatures alongside binaries. Document `gpg --verify` in install steps. |
-| **First-run welcome panel** | In-sidebar walkthrough: "Pick your provider", "Set API key", "Try `@codebase how is this code organized?`". |
+| **AppImage in-place updater** | Promote "Check for Updates" from "links to release page" to "download → atomic replace → restart". |
+| **GPG signing live** | Set `GPG_PRIVATE_KEY` repo secret. Every release ships `.asc` signatures alongside binaries. |
 | **Better error surfaces** | Toasts + retry buttons + "show details" expandable for stack traces. |
 | **Markdown UX polish** | Code-block copy button, line numbers in fenced blocks, inline math, optional mermaid. |
-| **Real artwork** | Replace Q-on-blue placeholder. AppImage icon, .desktop entry, in-app brand mark, macOS .icns, Windows .ico. |
-| **Test suite + CI gate** | `vitest` coverage for provider adapters (mocked), agent tool implementations, RAG store + retriever. CI gate. Today's coverage outside the editor's existing harness is zero. |
+| **Real artwork** | Replace Q-on-blue placeholder across all platforms. |
+| **Test suite + CI gate** | `vitest` coverage for provider adapters (mocked), agent tool implementations, RAG store + retriever. |
 
-**Demo:** clean Linux box, never used QBee. Download a GPG-verified AppImage. Launch. Welcome panel walks through provider setup. Agent runs `npm test`, hits an approval gate, runs, recovers from a forced `pkill -9 -f qbee-worker` mid-task.
+**Demo:** clean install, never used QBee. Launch. AI dashboard appears: "configure your providers". User pastes Anthropic key into the chat slot, picks Ollama for FIM, picks the Anthropic key again for embeddings. Clicks "Start a chat" from the quick actions. Editor opens with a `.py` file already selected; user highlights a function and types "what does this do?" — the chat prefills the selection automatically (no `@file:` typed). Reply streams. Then "agent: rename this to `parse_options`". Agent knows which file because the active editor was sent in the run context.
 
 **Ship criteria:**
+- AI dashboard is the default first-launch screen for new installs (configurable via toggle to revert to stock VSCode welcome)
+- Per-function provider routing: separate persisted config for chat, agent, FIM, embedding
+- Selection-as-context works for both chat and agent without any user opt-in
+- Active editor URI visible to the agent via system-prompt injection on every run
 - Worker crash recovery: 3 forced kills in 10s, all auto-recover
 - 70%+ test coverage on provider adapters and RAG retriever
-- AppImage download → `gpg --verify` succeeds → launches → first-run flow works without prior knowledge
+- AppImage download → `gpg --verify` succeeds → launches → dashboard works without prior knowledge
 - A "Send Diagnostic" command bundles logs + last 5 errors into a clipboard-pastable report
-- Agent runs with approval modal; "always allow" remembered per workspace
 
 ---
 
