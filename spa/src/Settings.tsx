@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from 'react'
 import type { LocalModel, LocalModelsProbeResponse, ProviderConfig, UpdateCheckResponse, UpdateProgressEvent } from '@qbee/shared'
-import { DEFAULT_PRESETS } from './presets.js'
+import { DEFAULT_PRESETS, presetIdxForLocalSource } from './presets.js'
 import { getEditorSetting, setEditorSetting, onEditorSettingChanged } from './editorBridge.js'
 
 const FIM_KEY_ENABLED = 'qbee.inlineCompletions.enabled'
@@ -295,14 +295,17 @@ export function Settings({ auth, embeddingProvider, setEmbeddingProvider, onClos
   }
 
   const useLocalModelForChat = (m: LocalModel) => {
-    setChatPresetIdx(0)
+    // Route to the preset that matches the source's port. Ollama lives at
+    // 11434, LM Studio at 1234, llama.cpp at 8080 — picking preset 0 (Ollama)
+    // for an LM Studio model would 404.
+    setChatPresetIdx(presetIdxForLocalSource(m.source))
     setChatModel(m.id)
-    setSavedNote(`chat → ${m.id}`)
+    setSavedNote(`chat → ${labelForSource(m.source)} / ${m.id}`)
   }
   const useLocalModelForAgent = (m: LocalModel) => {
-    setAgentPresetIdx(0)
+    setAgentPresetIdx(presetIdxForLocalSource(m.source))
     setAgentModel(m.id)
-    setSavedNote(`agent → ${m.id}`)
+    setSavedNote(`agent → ${labelForSource(m.source)} / ${m.id}`)
   }
   const useLocalModelForEmbedding = (m: LocalModel) => {
     setEmbedBaseUrl(`${m.baseUrl}/v1`)
